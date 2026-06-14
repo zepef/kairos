@@ -4,11 +4,13 @@ import { createTask, logIntent, setStatusByTitle, type TaskStatus } from "./db";
 // confirmation. Two intent families: data (createTask/setStatus) and system
 // (showTasks — only these put anything on screen, voice-first by design).
 export type Scope = "all" | "hours" | "day" | "week" | "month";
+// A display request: WHAT (optional folder) × WHEN (temporal scope).
+export type ShowSpec = { scope: Scope; category: string | null };
 export type DispatchResult = {
   ok: boolean;
   tool: string;
   speech: string; // what the TTS says back
-  show?: Scope; // system command: display the task list for this scope
+  show?: ShowSpec; // system command: display the task list
 };
 
 function normalizeCategory(raw: unknown): string | null {
@@ -119,11 +121,14 @@ export async function dispatch(
     case "showAgenda":
     case "listAgenda": {
       const scope = toScope(obj.scope ?? obj.range);
+      const category = normalizeCategory(obj.category);
       out = {
         ok: true,
         tool: "showTasks",
-        speech: `Voici ${SCOPE_LABEL[scope]}.`,
-        show: scope,
+        speech: category
+          ? `Voici ${SCOPE_LABEL[scope]} pour ${category}.`
+          : `Voici ${SCOPE_LABEL[scope]}.`,
+        show: { scope, category },
       };
       break;
     }

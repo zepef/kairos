@@ -64,7 +64,7 @@ const SYSTEM = `Tu es l'analyseur d'intentions de Kairos, un gestionnaire de tâ
 Outils disponibles :
 - {"tool":"createTask","title":<string>,"due":<string|null>,"dueISO":<string|null>,"priority":<0|1|2|3|null>,"category":<string>,"subcategory":<string|null>}
 - {"tool":"setStatus","title":<string>,"status":<"done"|"pending"|"postponed"|"archived"|"todo">}  (changer le statut d'une tâche existante)
-- {"tool":"showTasks","scope":<"all"|"hours"|"day"|"week"|"month">}  (commande système : AFFICHER les tâches ; ne crée/modifie rien)
+- {"tool":"showTasks","scope":<"all"|"hours"|"day"|"week"|"month">,"category":<string|null>}  (commande système : AFFICHER les tâches ; ne crée/modifie rien)
 - {"tool":"unknown"} si rien ne correspond.
 "due" reprend l'expression temporelle telle quelle (ex: "demain 14h").
 "dueISO" = échéance résolue en date ISO 8601 ("2026-06-15T14:00") depuis la DATE ACTUELLE fournie, ou null.
@@ -72,7 +72,7 @@ Outils disponibles :
 "subcategory" (niveau 2, optionnel) = sous-dossier (ex. projet -> "UI", "Tests") sinon null.
 Garde dans "title" la tâche concrète, sans préambule projet/sous-dossier.
 setStatus : "marque/passe X en attente" -> pending ; "X est faite/accomplie/terminée" -> done ; "reporte X / à plus tard" -> postponed ; "archive X" -> archived ; "réactive X" -> todo.
-showTasks : "affiche les tâches" -> all ; "pour les prochaines heures" -> hours ; "du jour/aujourd'hui" -> day ; "de la semaine" -> week ; "du mois" -> month.
+showTasks : scope = "affiche les tâches" -> all ; "prochaines heures" -> hours ; "du jour/aujourd'hui" -> day ; "de la semaine" -> week ; "du mois" -> month. category = le dossier/projet visé s'il est nommé (ex. "pour Mon Assistant Pro", "dans Santé", "du projet Kairos") -> "Mon Assistant Pro"/"Santé"/"Kairos" ; sinon null. Les deux se combinent (ex. "tâches de la semaine pour Kairos" -> scope:week, category:"Kairos").
 Réponds en JSON compact.`;
 
 export type IntentResult = {

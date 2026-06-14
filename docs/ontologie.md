@@ -87,7 +87,9 @@ Toute parole tombe dans une **intention** (`tool`). Trois familles :
     - « du jour » → `day` · « de la semaine » → `week` · « du mois » → `month`
 
   Donc « affiche les tâches du jour » = *les tâches dont l'échéance tombe aujourd'hui, groupées par dossier*. Le temporel restreint l'ensemble ; les dossiers le structurent. (Les tâches sans date n'apparaissent que dans `all`.)
-- (futur niveau 1 alternatif) afficher **un dossier** précis, **un statut** (« ce qui est en attente »), **un projet** — toujours combinables avec le niveau 2 temporel.
+
+  Le niveau « quoi » est lui-même paramétrable par un **sélecteur de dossier/projet** (`category`) : « affiche toutes les tâches **pour Mon Assistant Pro** » → seul ce dossier. **QUOI × QUAND se combinent** : « affiche les tâches de la semaine pour Kairos » → dossier *Kairos* ∩ fenêtre *semaine*.
+- (futur niveau 1 alternatif) sélecteur par **statut** (« ce qui est en attente / à reporter »), par personne, par lieu — toujours combinables avec le niveau 2 temporel.
 - (futur) masquer, naviguer, rechercher, trier.
 
 ### 4.3 **Inconnu**

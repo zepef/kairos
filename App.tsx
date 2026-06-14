@@ -14,7 +14,7 @@ import {
   useSpeechRecognitionEvent,
 } from "expo-speech-recognition";
 import { isLoaded, loadModel, parseIntent } from "./llm";
-import { dispatch, type Scope } from "./intent";
+import { dispatch, type Scope, type ShowSpec } from "./intent";
 import { initDb, listTasks, type Task } from "./db";
 
 // Kairos — STT (FR) + on-device intent parsing with Gemma 4 (E2B) via llama.rn.
@@ -27,14 +27,13 @@ type ModelStatus = "unloaded" | "loading" | "ready" | "error";
 // Dev test phrases (cycled by the "Tester l'intention" button) to drive the
 // intent loop without voice.
 const TEST_PHRASES = [
-  "ajoute réviser le dossier client aujourd'hui à 18h",
+  "affiche toutes les tâches pour Mon Assistant Pro",
+  "affiche les tâches du dossier Kairos",
   "affiche les tâches du jour",
-  "affiche les tâches du mois",
-  "affiche les tâches de la semaine",
   "affiche toutes les tâches",
+  "affiche les tâches de la semaine pour Kairos",
   "marque réviser le dossier client comme en attente",
   "archive la traduction anglaise",
-  "reporte les tests unitaires",
 ];
 
 // Robust ISO parsing: Hermes (RN engine) returns NaN for "2026-06-15T14:00"
@@ -106,8 +105,9 @@ export default function App() {
   const [intentPerf, setIntentPerf] = useState("");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [processing, setProcessing] = useState(false);
-  // null = minimal home (nothing on screen); a Scope = task list is displayed.
-  const [display, setDisplay] = useState<Scope | null>(null);
+  // null = minimal home (nothing on screen); a ShowSpec = task list is displayed
+  // (WHAT folder × WHEN temporal scope).
+  const [display, setDisplay] = useState<ShowSpec | null>(null);
 
   const refreshTasks = async () => setTasks(await listTasks("open"));
 
@@ -263,12 +263,21 @@ export default function App() {
   // tasks whose resolved date falls in the window.
   const displayedTasks = (() => {
     if (display === null) return [];
-    if (display === "all") return tasks;
-    const [s, e] = scopeBounds(display);
-    return tasks.filter((t) => {
-      const ms = parseIso(t.due_iso);
-      return !Number.isNaN(ms) && ms >= s && ms < e;
-    });
+    let set = tasks;
+    // Level 1 (WHAT): optional folder/category filter.
+    if (display.category) {
+      const c = display.category.toLowerCase();
+      set = set.filter((t) => (t.category || "").toLowerCase() === c);
+    }
+    // Level 2 (WHEN): optional temporal window.
+    if (display.scope !== "all") {
+      const [s, e] = scopeBounds(display.scope);
+      set = set.filter((t) => {
+        const ms = parseIso(t.due_iso);
+        return !Number.isNaN(ms) && ms >= s && ms < e;
+      });
+    }
+    return set;
   })();
 
   const folders = buildFolders(displayedTasks);
@@ -379,7 +388,13 @@ export default function App() {
         ) : (
           <>
             <View style={styles.tasksHeaderRow}>
-              <Text style={styles.sectionTitle}>{SCOPE_TITLE[display]}</Text>
+              <Text style={styles.sectionTitle}>
+                {display.category
+                  ? display.scope === "all"
+                    ? display.category
+                    : `${display.category} · ${SCOPE_TITLE[display.scope].toLowerCase()}`
+                  : SCOPE_TITLE[display.scope]}
+              </Text>
               <Pressable onPress={() => setDisplay(null)} hitSlop={10}>
                 <Text style={styles.hideBtn}>✕ Masquer</Text>
               </Pressable>
@@ -388,9 +403,11 @@ export default function App() {
             {displayedTasks.length === 0 ? (
               <View style={styles.tasksBox}>
                 <Text style={styles.taskEmpty}>
-                  {display === "all"
-                    ? "Aucune tâche."
-                    : "Rien sur cette période."}
+                  {display.category
+                    ? `Aucune tâche pour ${display.category}.`
+                    : display.scope === "all"
+                      ? "Aucune tâche."
+                      : "Rien sur cette période."}
                 </Text>
               </View>
             ) : (
