@@ -363,20 +363,6 @@ export default function App() {
 
         {modelStatus === "ready" && (
           <>
-        <Pressable
-          onPressIn={startListening}
-          onPressOut={stopListening}
-          style={({ pressed }) => [
-            styles.talkBtn,
-            status === "listening" && styles.talkBtnActive,
-            pressed && styles.talkBtnPressed,
-          ]}
-        >
-          <Text style={styles.talkBtnText}>
-            {status === "listening" ? "J'écoute…" : "Maintenir pour parler"}
-          </Text>
-        </Pressable>
-
         {display === null ? (
           processing ? (
             <Text style={styles.homeHint}>traitement…</Text>
@@ -452,6 +438,24 @@ export default function App() {
       <Text style={styles.journalLine} numberOfLines={1}>
         {log[0] ?? ""}
       </Text>
+
+      {/* Push-to-talk FAB, bottom-right (hold to speak). */}
+      {modelStatus === "ready" && (
+        <Pressable
+          onPressIn={startListening}
+          onPressOut={stopListening}
+          hitSlop={10}
+          style={({ pressed }) => [
+            styles.fab,
+            status === "listening" && styles.fabActive,
+            pressed && styles.fabPressed,
+          ]}
+        >
+          <View style={styles.micBody} />
+          <View style={styles.micStem} />
+          <View style={styles.micBase} />
+        </Pressable>
+      )}
     </View>
   );
 }
@@ -485,6 +489,33 @@ const styles = StyleSheet.create({
     color: "#9aa0a6",
     fontFamily: "monospace",
     backgroundColor: "#f1f3f6",
+  },
+  fab: {
+    position: "absolute",
+    right: 22,
+    bottom: 48,
+    width: 64,
+    height: 64,
+    borderRadius: 18,
+    backgroundColor: "#2f6fed",
+    alignItems: "center",
+    justifyContent: "center",
+    elevation: 6,
+    shadowColor: "#000",
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 3 },
+  },
+  fabActive: { backgroundColor: "#2e9e5b" },
+  fabPressed: { opacity: 0.9 },
+  micBody: { width: 15, height: 23, borderRadius: 7.5, backgroundColor: "#fff" },
+  micStem: { width: 2, height: 5, backgroundColor: "#fff", marginTop: 2 },
+  micBase: {
+    width: 17,
+    height: 2,
+    borderRadius: 1,
+    backgroundColor: "#fff",
+    marginTop: 1,
   },
   loadingBanner: {
     marginTop: 16,
