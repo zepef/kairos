@@ -7,6 +7,7 @@ export type Task = {
   status: "todo" | "done";
   due: string | null;
   priority: number | null;
+  category: string | null;
   created_at: number;
   completed_at: number | null;
 };
@@ -24,6 +25,7 @@ export async function initDb(): Promise<void> {
       status TEXT NOT NULL DEFAULT 'todo',
       due TEXT,
       priority INTEGER,
+      category TEXT,
       created_at INTEGER NOT NULL,
       completed_at INTEGER
     );
@@ -36,6 +38,12 @@ export async function initDb(): Promise<void> {
       created_at INTEGER NOT NULL
     );
   `);
+  // Migration for existing installs created before the category column existed.
+  try {
+    await db.execAsync("ALTER TABLE task ADD COLUMN category TEXT");
+  } catch {
+    // column already exists — ignore
+  }
 }
 
 function requireDb(): SQLite.SQLiteDatabase {
@@ -47,13 +55,15 @@ export async function createTask(input: {
   title: string;
   due?: string | null;
   priority?: number | null;
+  category?: string | null;
 }): Promise<Task> {
   const now = Date.now();
   const res = await requireDb().runAsync(
-    "INSERT INTO task (title, status, due, priority, created_at) VALUES (?, 'todo', ?, ?, ?)",
+    "INSERT INTO task (title, status, due, priority, category, created_at) VALUES (?, 'todo', ?, ?, ?, ?)",
     input.title,
     input.due ?? null,
     input.priority ?? null,
+    input.category ?? null,
     now,
   );
   return {
@@ -62,6 +72,7 @@ export async function createTask(input: {
     status: "todo",
     due: input.due ?? null,
     priority: input.priority ?? null,
+    category: input.category ?? null,
     created_at: now,
     completed_at: null,
   };

@@ -7,6 +7,17 @@ export type DispatchResult = {
   speech: string; // what the TTS should say back
 };
 
+// Normalise the LLM-provided category ("dossier") so grouping stays consistent
+// (e.g. "santé" / "Santé " -> "Santé").
+function normalizeCategory(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const c = raw.trim().replace(/\s+/g, " ");
+  if (!c) return null;
+  // Capitalize the first letter, preserve the rest (so project names like
+  // "Mon Assistant Pro" keep their casing). Grouping is case-insensitive in the UI.
+  return c.charAt(0).toUpperCase() + c.slice(1);
+}
+
 export async function dispatch(
   jsonStr: string,
   transcript: string,
@@ -31,15 +42,17 @@ export async function dispatch(
         out = { ok: false, tool: obj.tool, speech: "Quelle tâche dois-je ajouter ?" };
         break;
       }
+      const category = normalizeCategory(obj.category);
       await createTask({
         title: obj.title,
         due: obj.due ?? null,
         priority: typeof obj.priority === "number" ? obj.priority : null,
+        category,
       });
       out = {
         ok: true,
         tool: obj.tool,
-        speech: `Tâche ajoutée : ${obj.title}${obj.due ? `, ${obj.due}` : ""}.`,
+        speech: `Tâche ajoutée${category ? ` dans ${category}` : ""} : ${obj.title}${obj.due ? `, ${obj.due}` : ""}.`,
       };
       break;
     }

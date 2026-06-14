@@ -62,11 +62,16 @@ export async function releaseModel() {
 const SYSTEM = `Tu es l'analyseur d'intentions de Kairos, un gestionnaire de tâches vocal en français.
 À partir d'une phrase, tu renvoies UNIQUEMENT un objet JSON décrivant l'action, sans aucun texte autour.
 Outils disponibles :
-- {"tool":"createTask","title":<string>,"due":<string|null>,"priority":<0|1|2|3|null>}
+- {"tool":"createTask","title":<string>,"due":<string|null>,"priority":<0|1|2|3|null>,"category":<string>}
 - {"tool":"listAgenda","range":<"today"|"week">}
 - {"tool":"completeTask","title":<string>}
 - {"tool":"unknown"} si rien ne correspond.
-"due" reprend l'expression temporelle telle quelle (ex: "demain 14h"). Réponds en JSON compact.`;
+"due" reprend l'expression temporelle telle quelle (ex: "demain 14h").
+"category" est le dossier de la tâche :
+- Si la phrase nomme un PROJET (ex. "pour le projet Mon Assistant Pro", "au projet Kairos"), category = le NOM du projet tel quel (ex. "Mon Assistant Pro", "Kairos").
+- Sinon, déduis un dossier thématique court (un mot, majuscule initiale) : dentiste/médecin/pharmacie -> "Santé", un appel -> "Appels", un rendez-vous -> "Rendez-vous", des achats -> "Courses", boulot -> "Travail", administratif/argent -> "Finances", famille/enfants -> "Famille", sinon "Divers".
+Garde dans "title" la tâche concrète sans le préambule du projet (ex. "ajouter une UI en anglais").
+Réponds en JSON compact.`;
 
 export type IntentResult = {
   json: string;

@@ -17,9 +17,20 @@ const LANG = "fr-FR";
 type Status = "idle" | "listening" | "speaking";
 type ModelStatus = "unloaded" | "loading" | "ready" | "error";
 
+// Dev test phrases (cycled by the "Tester l'intention" button) to drive the
+// intent loop without voice.
+const TEST_PHRASES = [
+  "pour le projet Mon Assistant Pro, pense à ajouter une UI en anglais",
+  "ajoute au projet Kairos l'écriture des tests unitaires",
+  "appelle le dentiste demain à 14h pour reprendre rendez-vous",
+  "rappelle-moi d'acheter du pain et du lait ce soir en rentrant",
+  "qu'est-ce que j'ai de prévu cette semaine ?",
+];
+
 export default function App() {
   const [status, setStatus] = useState<Status>("idle");
   const [log, setLog] = useState<string[]>([]);
+  const [testIdx, setTestIdx] = useState(0);
 
   const [modelStatus, setModelStatus] = useState<ModelStatus>("unloaded");
   const [intentJson, setIntentJson] = useState("");
@@ -135,6 +146,20 @@ export default function App() {
 
   const stopListening = () => ExpoSpeechRecognitionModule.stop();
 
+  // Group open tasks into level-1 folders (created on the fly from the LLM's
+  // category). Case-insensitive so "Santé"/"santé" merge; first-seen label wins.
+  // Tasks with no category fall under "Divers".
+  const taskGroups = (() => {
+    const map = new Map<string, { label: string; items: Task[] }>();
+    for (const t of tasks) {
+      const label = t.category || "Divers";
+      const key = label.toLowerCase();
+      if (!map.has(key)) map.set(key, { label, items: [] });
+      map.get(key)!.items.push(t);
+    }
+    return [...map.values()].sort((a, b) => a.label.localeCompare(b.label));
+  })();
+
   const dotColor =
     status === "listening"
       ? "#2e9e5b"
@@ -173,18 +198,28 @@ export default function App() {
           <Text style={styles.sectionTitle}>Mes tâches ({tasks.length})</Text>
           {processing && <Text style={styles.processing}>traitement…</Text>}
         </View>
-        <View style={styles.tasksBox}>
-          {tasks.length === 0 ? (
+        {tasks.length === 0 ? (
+          <View style={styles.tasksBox}>
             <Text style={styles.taskEmpty}>Aucune tâche. Dicte une demande.</Text>
-          ) : (
-            tasks.map((t) => (
-              <View key={t.id} style={styles.taskRow}>
-                <Text style={styles.taskTitle}>{t.title}</Text>
-                {t.due ? <Text style={styles.taskDue}>{t.due}</Text> : null}
+          </View>
+        ) : (
+          // Level-1 folders, created on the fly — only non-empty ones show.
+          taskGroups.map((g) => (
+            <View key={g.label} style={styles.folder}>
+              <Text style={styles.folderTitle}>
+                {g.label} ({g.items.length})
+              </Text>
+              <View style={styles.tasksBox}>
+                {g.items.map((t) => (
+                  <View key={t.id} style={styles.taskRow}>
+                    <Text style={styles.taskTitle}>{t.title}</Text>
+                    {t.due ? <Text style={styles.taskDue}>{t.due}</Text> : null}
+                  </View>
+                ))}
               </View>
-            ))
-          )}
-        </View>
+            </View>
+          ))
+        )}
 
         <View style={styles.gemmaBox}>
           <View style={styles.gemmaHeaderRow}>
@@ -207,6 +242,17 @@ export default function App() {
                   ? "Chargement…"
                   : "Charger Gemma 4"}
             </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              const phrase = TEST_PHRASES[testIdx % TEST_PHRASES.length];
+              setTestIdx((i) => i + 1);
+              runIntent(phrase);
+            }}
+            disabled={modelStatus !== "ready"}
+            style={[styles.ttsBtn, modelStatus !== "ready" && styles.btnDisabled]}
+          >
+            <Text style={styles.ttsBtnText}>Tester l'intention</Text>
           </Pressable>
           <Text style={styles.label}>Action (JSON)</Text>
           <Text style={styles.intentJson}>{intentJson || "—"}</Text>
@@ -274,6 +320,15 @@ const styles = StyleSheet.create({
   },
   sectionTitle: { fontSize: 17, fontWeight: "700", color: "#1a1a1a" },
   processing: { fontSize: 13, color: "#b8860b", fontWeight: "600" },
+  folder: { marginTop: 14 },
+  folderTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#2f6fed",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginBottom: 6,
+  },
   tasksBox: {
     marginTop: 8,
     backgroundColor: "#fff",
