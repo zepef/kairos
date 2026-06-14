@@ -1,10 +1,12 @@
-import { completeTaskByTitle, createTask, listTasks, logIntent } from "./db";
+import { completeTaskByTitle, createTask, logIntent } from "./db";
 
 // J4: turn Gemma's JSON action into a real DB mutation + a spoken confirmation.
+export type AgendaRange = "day" | "week" | "month";
 export type DispatchResult = {
   ok: boolean;
   tool: string;
   speech: string; // what the TTS should say back
+  view?: AgendaRange; // system command: switch the displayed calendar view
 };
 
 // Normalise the LLM-provided category ("dossier") so grouping stays consistent
@@ -43,16 +45,20 @@ export async function dispatch(
         break;
       }
       const category = normalizeCategory(obj.category);
+      const subcategory = normalizeCategory(obj.subcategory);
       await createTask({
         title: obj.title,
         due: obj.due ?? null,
+        dueIso: typeof obj.dueISO === "string" ? obj.dueISO : null,
         priority: typeof obj.priority === "number" ? obj.priority : null,
         category,
+        subcategory,
       });
+      const where = [category, subcategory].filter(Boolean).join(" › ");
       out = {
         ok: true,
         tool: obj.tool,
-        speech: `Tâche ajoutée${category ? ` dans ${category}` : ""} : ${obj.title}${obj.due ? `, ${obj.due}` : ""}.`,
+        speech: `Tâche ajoutée${where ? ` dans ${where}` : ""} : ${obj.title}${obj.due ? `, ${obj.due}` : ""}.`,
       };
       break;
     }
@@ -63,18 +69,17 @@ export async function dispatch(
         : { ok: false, tool: obj.tool, speech: "Je n'ai pas trouvé cette tâche." };
       break;
     }
+    case "showAgenda":
     case "listAgenda": {
-      const tasks = await listTasks("open");
+      const range: AgendaRange =
+        obj.range === "week" || obj.range === "month" ? obj.range : "day";
+      const label =
+        range === "day" ? "la journée" : range === "week" ? "la semaine" : "le mois";
       out = {
         ok: true,
-        tool: obj.tool,
-        speech:
-          tasks.length === 0
-            ? "Tu n'as rien de prévu."
-            : `Tu as ${tasks.length} tâche${tasks.length > 1 ? "s" : ""} : ${tasks
-                .slice(0, 5)
-                .map((t) => t.title)
-                .join(", ")}.`,
+        tool: "showAgenda",
+        speech: `Voici le calendrier de ${label}.`,
+        view: range,
       };
       break;
     }

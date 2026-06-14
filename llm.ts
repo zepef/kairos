@@ -62,15 +62,18 @@ export async function releaseModel() {
 const SYSTEM = `Tu es l'analyseur d'intentions de Kairos, un gestionnaire de tâches vocal en français.
 À partir d'une phrase, tu renvoies UNIQUEMENT un objet JSON décrivant l'action, sans aucun texte autour.
 Outils disponibles :
-- {"tool":"createTask","title":<string>,"due":<string|null>,"priority":<0|1|2|3|null>,"category":<string>}
-- {"tool":"listAgenda","range":<"today"|"week">}
+- {"tool":"createTask","title":<string>,"due":<string|null>,"dueISO":<string|null>,"priority":<0|1|2|3|null>,"category":<string>,"subcategory":<string|null>}
 - {"tool":"completeTask","title":<string>}
+- {"tool":"showAgenda","range":<"day"|"week"|"month">}   (commande système : afficher le calendrier ; ne crée rien)
 - {"tool":"unknown"} si rien ne correspond.
 "due" reprend l'expression temporelle telle quelle (ex: "demain 14h").
-"category" est le dossier de la tâche :
-- Si la phrase nomme un PROJET (ex. "pour le projet Mon Assistant Pro", "au projet Kairos"), category = le NOM du projet tel quel (ex. "Mon Assistant Pro", "Kairos").
-- Sinon, déduis un dossier thématique court (un mot, majuscule initiale) : dentiste/médecin/pharmacie -> "Santé", un appel -> "Appels", un rendez-vous -> "Rendez-vous", des achats -> "Courses", boulot -> "Travail", administratif/argent -> "Finances", famille/enfants -> "Famille", sinon "Divers".
-Garde dans "title" la tâche concrète sans le préambule du projet (ex. "ajouter une UI en anglais").
+"dueISO" = cette échéance résolue en date ISO 8601 ("2026-06-15T14:00") à partir de la DATE ACTUELLE fournie, ou null si aucune échéance.
+"category" est le dossier (niveau 1) :
+- Si la phrase nomme un PROJET (ex. "pour le projet Mon Assistant Pro"), category = le NOM du projet tel quel.
+- Sinon dossier thématique court : dentiste/médecin -> "Santé", un appel -> "Appels", un rdv -> "Rendez-vous", achats -> "Courses", boulot -> "Travail", argent -> "Finances", famille -> "Famille", sinon "Divers".
+"subcategory" (niveau 2, optionnel) = sous-dossier dans le dossier, ex. projet Mon Assistant Pro -> "UI", "Tests", "Docs" ; sinon null.
+Garde dans "title" la tâche concrète, sans le préambule projet/sous-dossier (ex. "traduction anglaise").
+Pour "montre-moi le calendrier de la journée/semaine/mois", utilise showAgenda (day/week/month).
 Réponds en JSON compact.`;
 
 export type IntentResult = {
@@ -93,13 +96,29 @@ function extractJson(raw: string): string {
   return s >= 0 && e > s ? body.slice(s, e + 1).trim() : body.trim();
 }
 
+function nowContext(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  const local = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+  const jours = [
+    "dimanche",
+    "lundi",
+    "mardi",
+    "mercredi",
+    "jeudi",
+    "vendredi",
+    "samedi",
+  ];
+  return `${jours[d.getDay()]} ${local}`;
+}
+
 export async function parseIntent(text: string): Promise<IntentResult> {
   if (!ctx) throw new Error("model not loaded");
   const t0 = Date.now();
   const res = await ctx.completion({
     messages: [
       { role: "system", content: SYSTEM },
-      { role: "user", content: text },
+      { role: "user", content: `Date actuelle: ${nowContext()}.\n${text}` },
     ],
     jinja: true, // use Gemma 4's embedded chat template
     // Gemma 4 is a reasoning model: thinking is ON by default and dumps a long

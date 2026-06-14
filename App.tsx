@@ -7,7 +7,7 @@ import {
   useSpeechRecognitionEvent,
 } from "expo-speech-recognition";
 import { isLoaded, loadModel, parseIntent } from "./llm";
-import { dispatch } from "./intent";
+import { dispatch, type AgendaRange } from "./intent";
 import { initDb, listTasks, type Task } from "./db";
 
 // Kairos — STT (FR) + on-device intent parsing with Gemma 4 (E2B) via llama.rn.
@@ -20,12 +20,38 @@ type ModelStatus = "unloaded" | "loading" | "ready" | "error";
 // Dev test phrases (cycled by the "Tester l'intention" button) to drive the
 // intent loop without voice.
 const TEST_PHRASES = [
-  "pour le projet Mon Assistant Pro, pense à ajouter une UI en anglais",
-  "ajoute au projet Kairos l'écriture des tests unitaires",
-  "appelle le dentiste demain à 14h pour reprendre rendez-vous",
-  "rappelle-moi d'acheter du pain et du lait ce soir en rentrant",
-  "qu'est-ce que j'ai de prévu cette semaine ?",
+  "pour le projet Mon Assistant Pro, dans l'UI, ajoute la traduction anglaise",
+  "ajoute au projet Kairos, partie Tests, écrire les tests unitaires",
+  "appelle le dentiste demain à 14h",
+  "montre-moi le calendrier de la semaine",
+  "montre-moi le calendrier de la journée",
 ];
+
+// Robust ISO parsing: Hermes (RN engine) returns NaN for "2026-06-15T14:00"
+// (no seconds), so build the Date from parts manually. Returns local-time ms.
+function parseIso(iso: string | null): number {
+  if (!iso) return NaN;
+  const m = iso.match(
+    /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?/,
+  );
+  if (!m) return NaN;
+  return new Date(
+    +m[1],
+    +m[2] - 1,
+    +m[3],
+    +(m[4] ?? 0),
+    +(m[5] ?? 0),
+    +(m[6] ?? 0),
+  ).getTime();
+}
+
+function fmtWhen(iso: string): string {
+  const ms = parseIso(iso);
+  if (Number.isNaN(ms)) return "";
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 
 export default function App() {
   const [status, setStatus] = useState<Status>("idle");
@@ -37,6 +63,7 @@ export default function App() {
   const [intentPerf, setIntentPerf] = useState("");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [processing, setProcessing] = useState(false);
+  const [view, setView] = useState<"folders" | AgendaRange>("folders");
 
   const refreshTasks = async () => setTasks(await listTasks("open"));
 
@@ -114,6 +141,7 @@ export default function App() {
       console.log(`[KAIROS] intent ${r.ms}ms ${r.tokensPerSec}tok/s :: ${r.json}`);
       // J4: execute the action on the local DB, then confirm out loud.
       const res = await dispatch(r.json, text);
+      if (res.view) setView(res.view); // system command: switch calendar view
       await refreshTasks();
       addLog(`${res.ok ? "✓" : "✗"} ${res.tool}: ${res.speech}`);
       speak(res.speech);
@@ -146,19 +174,76 @@ export default function App() {
 
   const stopListening = () => ExpoSpeechRecognitionModule.stop();
 
-  // Group open tasks into level-1 folders (created on the fly from the LLM's
-  // category). Case-insensitive so "Santé"/"santé" merge; first-seen label wins.
-  // Tasks with no category fall under "Divers".
-  const taskGroups = (() => {
-    const map = new Map<string, { label: string; items: Task[] }>();
+  // Level-1 folders -> level-2 subfolders (case-insensitive; first-seen label).
+  // Tasks with no category fall under "Divers"; "" subcategory = directly in the
+  // folder. Only non-empty folders/subfolders are produced.
+  const folders = (() => {
+    type Sub = { label: string; items: Task[] };
+    const map = new Map<string, { label: string; subs: Map<string, Sub> }>();
     for (const t of tasks) {
-      const label = t.category || "Divers";
-      const key = label.toLowerCase();
-      if (!map.has(key)) map.set(key, { label, items: [] });
-      map.get(key)!.items.push(t);
+      const cat = t.category || "Divers";
+      const ck = cat.toLowerCase();
+      if (!map.has(ck)) map.set(ck, { label: cat, subs: new Map() });
+      const folder = map.get(ck)!;
+      const sub = t.subcategory || "";
+      const sk = sub.toLowerCase();
+      if (!folder.subs.has(sk)) folder.subs.set(sk, { label: sub, items: [] });
+      folder.subs.get(sk)!.items.push(t);
     }
-    return [...map.values()].sort((a, b) => a.label.localeCompare(b.label));
+    return [...map.values()]
+      .sort((a, b) => a.label.localeCompare(b.label))
+      .map((f) => ({
+        label: f.label,
+        count: [...f.subs.values()].reduce((n, s) => n + s.items.length, 0),
+        // subfolders first (named), then the folder's own loose tasks ("")
+        subs: [...f.subs.values()].sort((a, b) =>
+          a.label && b.label ? a.label.localeCompare(b.label) : a.label ? -1 : 1,
+        ),
+      }));
   })();
+
+  // Calendar views: filter tasks by resolved due_iso into day/week/month.
+  const rangeBounds = (r: AgendaRange): [number, number] => {
+    const d = new Date();
+    const startOfDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    if (r === "day") {
+      const end = new Date(startOfDay);
+      end.setDate(end.getDate() + 1);
+      return [startOfDay.getTime(), end.getTime()];
+    }
+    if (r === "week") {
+      const mondayOffset = (startOfDay.getDay() + 6) % 7;
+      const s = new Date(startOfDay);
+      s.setDate(s.getDate() - mondayOffset);
+      const e = new Date(s);
+      e.setDate(e.getDate() + 7);
+      return [s.getTime(), e.getTime()];
+    }
+    return [
+      new Date(d.getFullYear(), d.getMonth(), 1).getTime(),
+      new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime(),
+    ];
+  };
+
+  const agendaTasks =
+    view === "folders"
+      ? []
+      : tasks
+          .map((t) => ({ t, ms: parseIso(t.due_iso) }))
+          .filter(({ ms }) => !Number.isNaN(ms))
+          .filter(({ ms }) => {
+            const [s, e] = rangeBounds(view);
+            return ms >= s && ms < e;
+          })
+          .sort((a, b) => a.ms - b.ms)
+          .map(({ t }) => t);
+
+  const VIEWS: { key: "folders" | AgendaRange; label: string }[] = [
+    { key: "folders", label: "Dossiers" },
+    { key: "day", label: "Jour" },
+    { key: "week", label: "Semaine" },
+    { key: "month", label: "Mois" },
+  ];
 
   const dotColor =
     status === "listening"
@@ -194,31 +279,79 @@ export default function App() {
           </Text>
         </Pressable>
 
+        <View style={styles.viewBar}>
+          {VIEWS.map((v) => (
+            <Pressable
+              key={v.key}
+              onPress={() => setView(v.key)}
+              style={[styles.viewBtn, view === v.key && styles.viewBtnActive]}
+            >
+              <Text
+                style={[
+                  styles.viewBtnText,
+                  view === v.key && styles.viewBtnTextActive,
+                ]}
+              >
+                {v.label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+
         <View style={styles.tasksHeaderRow}>
-          <Text style={styles.sectionTitle}>Mes tâches ({tasks.length})</Text>
+          <Text style={styles.sectionTitle}>
+            {view === "folders" ? `Mes tâches (${tasks.length})` : "Calendrier"}
+          </Text>
           {processing && <Text style={styles.processing}>traitement…</Text>}
         </View>
-        {tasks.length === 0 ? (
-          <View style={styles.tasksBox}>
-            <Text style={styles.taskEmpty}>Aucune tâche. Dicte une demande.</Text>
-          </View>
-        ) : (
-          // Level-1 folders, created on the fly — only non-empty ones show.
-          taskGroups.map((g) => (
-            <View key={g.label} style={styles.folder}>
-              <Text style={styles.folderTitle}>
-                {g.label} ({g.items.length})
-              </Text>
-              <View style={styles.tasksBox}>
-                {g.items.map((t) => (
-                  <View key={t.id} style={styles.taskRow}>
-                    <Text style={styles.taskTitle}>{t.title}</Text>
-                    {t.due ? <Text style={styles.taskDue}>{t.due}</Text> : null}
+
+        {view === "folders" ? (
+          tasks.length === 0 ? (
+            <View style={styles.tasksBox}>
+              <Text style={styles.taskEmpty}>Aucune tâche. Dicte une demande.</Text>
+            </View>
+          ) : (
+            // Level-1 folders -> level-2 subfolders, created on the fly.
+            folders.map((f) => (
+              <View key={f.label} style={styles.folder}>
+                <Text style={styles.folderTitle}>
+                  {f.label} ({f.count})
+                </Text>
+                {f.subs.map((s) => (
+                  <View key={s.label || "_"}>
+                    {s.label ? (
+                      <Text style={styles.subfolderTitle}>{s.label}</Text>
+                    ) : null}
+                    <View style={styles.tasksBox}>
+                      {s.items.map((t) => (
+                        <View key={t.id} style={styles.taskRow}>
+                          <Text style={styles.taskTitle}>{t.title}</Text>
+                          {t.due ? (
+                            <Text style={styles.taskDue}>{t.due}</Text>
+                          ) : null}
+                        </View>
+                      ))}
+                    </View>
                   </View>
                 ))}
               </View>
-            </View>
-          ))
+            ))
+          )
+        ) : agendaTasks.length === 0 ? (
+          <View style={styles.tasksBox}>
+            <Text style={styles.taskEmpty}>Rien de daté sur cette période.</Text>
+          </View>
+        ) : (
+          <View style={styles.tasksBox}>
+            {agendaTasks.map((t) => (
+              <View key={t.id} style={styles.taskRow}>
+                <Text style={styles.taskTitle}>{t.title}</Text>
+                <Text style={styles.taskDue}>
+                  {t.due_iso ? fmtWhen(t.due_iso) : t.due}
+                </Text>
+              </View>
+            ))}
+          </View>
         )}
 
         <View style={styles.gemmaBox}>
@@ -329,6 +462,30 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
     marginBottom: 6,
   },
+  subfolderTitle: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#7a869a",
+    marginLeft: 6,
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  viewBar: {
+    flexDirection: "row",
+    marginTop: 18,
+    backgroundColor: "#eef1f6",
+    borderRadius: 10,
+    padding: 3,
+  },
+  viewBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 8,
+    alignItems: "center",
+  },
+  viewBtnActive: { backgroundColor: "#fff" },
+  viewBtnText: { fontSize: 13, color: "#7a869a", fontWeight: "600" },
+  viewBtnTextActive: { color: "#2f6fed" },
   tasksBox: {
     marginTop: 8,
     backgroundColor: "#fff",

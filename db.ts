@@ -5,9 +5,11 @@ export type Task = {
   id: number;
   title: string;
   status: "todo" | "done";
-  due: string | null;
+  due: string | null; // raw expression as said ("demain 14h")
+  due_iso: string | null; // resolved ISO datetime for calendar filtering
   priority: number | null;
-  category: string | null;
+  category: string | null; // level-1 folder
+  subcategory: string | null; // level-2 sub-folder
   created_at: number;
   completed_at: number | null;
 };
@@ -24,8 +26,10 @@ export async function initDb(): Promise<void> {
       title TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'todo',
       due TEXT,
+      due_iso TEXT,
       priority INTEGER,
       category TEXT,
+      subcategory TEXT,
       created_at INTEGER NOT NULL,
       completed_at INTEGER
     );
@@ -38,11 +42,17 @@ export async function initDb(): Promise<void> {
       created_at INTEGER NOT NULL
     );
   `);
-  // Migration for existing installs created before the category column existed.
-  try {
-    await db.execAsync("ALTER TABLE task ADD COLUMN category TEXT");
-  } catch {
-    // column already exists — ignore
+  // Migrations for existing installs (ignore "duplicate column" errors).
+  for (const col of [
+    "category TEXT",
+    "subcategory TEXT",
+    "due_iso TEXT",
+  ]) {
+    try {
+      await db.execAsync(`ALTER TABLE task ADD COLUMN ${col}`);
+    } catch {
+      // column already exists — ignore
+    }
   }
 }
 
@@ -54,16 +64,20 @@ function requireDb(): SQLite.SQLiteDatabase {
 export async function createTask(input: {
   title: string;
   due?: string | null;
+  dueIso?: string | null;
   priority?: number | null;
   category?: string | null;
+  subcategory?: string | null;
 }): Promise<Task> {
   const now = Date.now();
   const res = await requireDb().runAsync(
-    "INSERT INTO task (title, status, due, priority, category, created_at) VALUES (?, 'todo', ?, ?, ?, ?)",
+    "INSERT INTO task (title, status, due, due_iso, priority, category, subcategory, created_at) VALUES (?, 'todo', ?, ?, ?, ?, ?, ?)",
     input.title,
     input.due ?? null,
+    input.dueIso ?? null,
     input.priority ?? null,
     input.category ?? null,
+    input.subcategory ?? null,
     now,
   );
   return {
@@ -71,8 +85,10 @@ export async function createTask(input: {
     title: input.title,
     status: "todo",
     due: input.due ?? null,
+    due_iso: input.dueIso ?? null,
     priority: input.priority ?? null,
     category: input.category ?? null,
+    subcategory: input.subcategory ?? null,
     created_at: now,
     completed_at: null,
   };
