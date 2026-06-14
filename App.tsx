@@ -82,9 +82,11 @@ export default function App() {
       setModelStatus("ready");
       setIntentPerf(`chargé en ${(ms / 1000).toFixed(1)}s`);
       addLog(`✓ Gemma 4 prêt (${(ms / 1000).toFixed(1)}s)`);
+      console.log(`[CADENCE] model ready in ${ms}ms`);
     } catch (e: any) {
       setModelStatus("error");
       addLog(`✗ load model: ${e?.message ?? e}`);
+      console.log(`[CADENCE] load error: ${e?.message ?? e}`);
     }
   };
 
@@ -98,10 +100,12 @@ export default function App() {
         `${r.ms} ms${r.tokensPerSec ? ` · ${r.tokensPerSec} tok/s` : ""}`,
       );
       addLog(`✓ intent (${r.ms}ms): ${r.json.slice(0, 60)}`);
+      console.log(`[CADENCE] intent ${r.ms}ms ${r.tokensPerSec}tok/s :: ${r.json}`);
       speak("C'est noté.");
     } catch (e: any) {
       setIntentJson("");
       addLog(`✗ intent: ${e?.message ?? e}`);
+      console.log(`[CADENCE] intent error: ${e?.message ?? e}`);
     }
   };
 
@@ -138,8 +142,13 @@ export default function App() {
         : "#9aa0a6";
 
   return (
-    <View style={styles.container}>
+    <View style={styles.screen}>
       <StatusBar style="dark" />
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.container}
+        keyboardShouldPersistTaps="handled"
+      >
       <Text style={styles.title}>Cadence — test vocal</Text>
 
       <View style={styles.statusRow}>
@@ -206,8 +215,8 @@ export default function App() {
           onPress={() =>
             runIntent(finalText || "ajoute appeler le dentiste demain à 14h")
           }
-          disabled={modelStatus !== "ready"}
-          style={[styles.ttsBtn, modelStatus !== "ready" && styles.btnDisabled]}
+          disabled={modelStatus === "loading"}
+          style={[styles.ttsBtn, modelStatus === "loading" && styles.btnDisabled]}
         >
           <Text style={styles.ttsBtnText}>Tester l'intention</Text>
         </Pressable>
@@ -217,23 +226,26 @@ export default function App() {
       </View>
 
       <Text style={styles.label}>Journal</Text>
-      <ScrollView style={styles.logBox}>
+      <View style={styles.logBox}>
         {log.map((line, i) => (
           <Text key={i} style={styles.logLine}>
             {line}
           </Text>
         ))}
+      </View>
       </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: "#fbfbfa" },
+  scroll: { flex: 1 },
   container: {
-    flex: 1,
     backgroundColor: "#fbfbfa",
     paddingTop: 60,
     paddingHorizontal: 20,
+    paddingBottom: 48,
   },
   title: { fontSize: 22, fontWeight: "700", color: "#1a1a1a" },
   statusRow: { flexDirection: "row", alignItems: "center", marginTop: 12 },
@@ -304,7 +316,6 @@ const styles = StyleSheet.create({
   gemmaPerf: { fontSize: 12, color: "#2e9e5b", fontWeight: "600" },
   logBox: {
     marginTop: 6,
-    flex: 1,
     backgroundColor: "#0d1117",
     borderRadius: 10,
     padding: 10,

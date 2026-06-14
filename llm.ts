@@ -51,6 +51,16 @@ export type IntentResult = {
   tokensPerSec?: number;
 };
 
+// Gemma 4 tends to wrap its answer in a ```json … ``` markdown fence.
+// Extract the bare JSON object so downstream code gets clean, parseable output.
+function extractJson(raw: string): string {
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const body = fenced ? fenced[1] : raw;
+  const s = body.indexOf("{");
+  const e = body.lastIndexOf("}");
+  return s >= 0 && e > s ? body.slice(s, e + 1).trim() : body.trim();
+}
+
 export async function parseIntent(text: string): Promise<IntentResult> {
   if (!ctx) throw new Error("model not loaded");
   const t0 = Date.now();
@@ -60,16 +70,22 @@ export async function parseIntent(text: string): Promise<IntentResult> {
       { role: "user", content: text },
     ],
     jinja: true, // use Gemma 4's embedded chat template
+    // Gemma 4 is a reasoning model: thinking is ON by default and dumps a long
+    // "Thinking Process" before the answer (~48s). Disable it for fast JSON.
+    enable_thinking: false,
+    chat_template_kwargs: { enable_thinking: false },
+    reasoning_format: "none",
     response_format: { type: "json_object" }, // constrain to valid JSON
-    n_predict: 200,
-    temperature: 0.1,
-    top_p: 0.9,
+    n_predict: 120,
+    temperature: 0.2,
+    top_p: 0.95,
+    top_k: 64,
   });
   const ms = Date.now() - t0;
   const predicted = (res as any).timings?.predicted_n as number | undefined;
   const predMs = (res as any).timings?.predicted_ms as number | undefined;
   return {
-    json: (res.text ?? "").trim(),
+    json: extractJson(res.text ?? ""),
     ms,
     tokensPredicted: predicted,
     tokensPerSec:
