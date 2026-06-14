@@ -22,7 +22,17 @@ const LANG = "fr-FR";
 type Status = "idle" | "listening" | "speaking";
 type ModelStatus = "unloaded" | "loading" | "ready" | "error";
 
+// Varied utterances to verify static-prefix KV reuse across DIFFERENT inputs.
+const TEST_PHRASES = [
+  "ajoute appeler le dentiste demain à 14h",
+  "rappelle-moi d'acheter du pain ce soir",
+  "qu'est-ce que j'ai de prévu demain ?",
+  "marque la réunion budget comme terminée",
+  "crée une tâche urgente : envoyer le rapport vendredi",
+];
+
 export default function App() {
+  const [testIdx, setTestIdx] = useState(0);
   const [status, setStatus] = useState<Status>("idle");
   const [partial, setPartial] = useState("");
   const [finalText, setFinalText] = useState("");
@@ -93,11 +103,13 @@ export default function App() {
   const runIntent = async (text: string) => {
     setIntentJson("…");
     setIntentPerf("inférence…");
+    console.log(`[CADENCE] input :: ${text}`);
     try {
       const r = await parseIntent(text);
       setIntentJson(r.json);
       setIntentPerf(
-        `${r.ms} ms${r.tokensPerSec ? ` · ${r.tokensPerSec} tok/s` : ""}`,
+        `total ${r.ms}ms · prefill ${r.prefillMs ?? "?"}ms/${r.prefillTokens ?? "?"}tok · ` +
+          `decode ${r.decodeMs ?? "?"}ms${r.tokensPerSec ? ` @${r.tokensPerSec}tok/s` : ""}`,
       );
       addLog(`✓ intent (${r.ms}ms): ${r.json.slice(0, 60)}`);
       console.log(`[CADENCE] intent ${r.ms}ms ${r.tokensPerSec}tok/s :: ${r.json}`);
@@ -212,9 +224,11 @@ export default function App() {
           </Text>
         </Pressable>
         <Pressable
-          onPress={() =>
-            runIntent(finalText || "ajoute appeler le dentiste demain à 14h")
-          }
+          onPress={() => {
+            const phrase = finalText || TEST_PHRASES[testIdx % TEST_PHRASES.length];
+            setTestIdx((i) => i + 1);
+            runIntent(phrase);
+          }}
           disabled={modelStatus === "loading"}
           style={[styles.ttsBtn, modelStatus === "loading" && styles.btnDisabled]}
         >

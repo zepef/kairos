@@ -49,6 +49,9 @@ export type IntentResult = {
   ms: number;
   tokensPredicted?: number;
   tokensPerSec?: number;
+  prefillMs?: number;
+  prefillTokens?: number;
+  decodeMs?: number;
 };
 
 // Gemma 4 tends to wrap its answer in a ```json … ``` markdown fence.
@@ -82,13 +85,27 @@ export async function parseIntent(text: string): Promise<IntentResult> {
     top_k: 64,
   });
   const ms = Date.now() - t0;
-  const predicted = (res as any).timings?.predicted_n as number | undefined;
-  const predMs = (res as any).timings?.predicted_ms as number | undefined;
+  const t = (res as any).timings ?? {};
+  const promptN = t.prompt_n as number | undefined; // prefill tokens
+  const promptMs = t.prompt_ms as number | undefined; // prefill (TTFT) time
+  const predicted = t.predicted_n as number | undefined; // decoded tokens
+  const predMs = t.predicted_ms as number | undefined; // decode time
+  const perSec = (n?: number, msv?: number) =>
+    n && msv ? +(n / (msv / 1000)).toFixed(1) : undefined;
+  // Full breakdown so we know if we are prefill-bound or decode-bound.
+  console.log(
+    `[CADENCE] timings prefill=${Math.round(promptMs ?? 0)}ms/${promptN ?? "?"}tok ` +
+      `(${perSec(promptN, promptMs) ?? "?"} tok/s) | ` +
+      `decode=${Math.round(predMs ?? 0)}ms/${predicted ?? "?"}tok ` +
+      `(${perSec(predicted, predMs) ?? "?"} tok/s) | wall=${ms}ms`,
+  );
   return {
     json: extractJson(res.text ?? ""),
     ms,
     tokensPredicted: predicted,
-    tokensPerSec:
-      predicted && predMs ? +(predicted / (predMs / 1000)).toFixed(1) : undefined,
+    tokensPerSec: perSec(predicted, predMs),
+    prefillMs: promptMs ? Math.round(promptMs) : undefined,
+    prefillTokens: promptN,
+    decodeMs: predMs ? Math.round(predMs) : undefined,
   };
 }
