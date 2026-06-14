@@ -25,7 +25,31 @@ export async function loadModel(
     },
     (p) => onProgress?.(p),
   );
+  // Warm up: prefill the static system prefix into the KV cache now, so the
+  // FIRST real command isn't prefill-bound (15s -> ~6s). llama.rn reuses the
+  // common prefix automatically on subsequent completions on the same context.
+  await warmUp();
   return { ms: Date.now() - t0 };
+}
+
+async function warmUp() {
+  if (!ctx) return;
+  try {
+    await ctx.completion({
+      messages: [
+        { role: "system", content: SYSTEM },
+        { role: "user", content: "ping" },
+      ],
+      jinja: true,
+      enable_thinking: false,
+      chat_template_kwargs: { enable_thinking: false },
+      reasoning_format: "none",
+      n_predict: 1, // we only care about caching the prefill, not the output
+    });
+    console.log("[CADENCE] warm-up done (static prefix cached)");
+  } catch (e: any) {
+    console.log(`[CADENCE] warm-up skipped: ${e?.message ?? e}`);
+  }
 }
 
 export async function releaseModel() {
