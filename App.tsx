@@ -14,7 +14,7 @@ import {
   useSpeechRecognitionEvent,
 } from "expo-speech-recognition";
 import { isLoaded, loadModel, parseIntent } from "./llm";
-import { dispatch, type AgendaRange } from "./intent";
+import { dispatch, type Scope } from "./intent";
 import { initDb, listTasks, type Task } from "./db";
 
 // Kairos — STT (FR) + on-device intent parsing with Gemma 4 (E2B) via llama.rn.
@@ -27,11 +27,14 @@ type ModelStatus = "unloaded" | "loading" | "ready" | "error";
 // Dev test phrases (cycled by the "Tester l'intention" button) to drive the
 // intent loop without voice.
 const TEST_PHRASES = [
-  "pour le projet Mon Assistant Pro, dans l'UI, ajoute la traduction anglaise",
-  "ajoute au projet Kairos, partie Tests, écrire les tests unitaires",
+  "affiche les tâches du jour",
+  "affiche les tâches de la semaine",
+  "affiche les tâches pour les prochaines heures",
+  "affiche toutes les tâches",
+  "marque appeler le dentiste comme en attente",
+  "archive la traduction anglaise",
+  "reporte les tests unitaires",
   "appelle le dentiste demain à 14h",
-  "montre-moi le calendrier de la semaine",
-  "montre-moi le calendrier de la journée",
 ];
 
 // Robust ISO parsing: Hermes (RN engine) returns NaN for "2026-06-15T14:00"
@@ -71,7 +74,8 @@ export default function App() {
   const [intentPerf, setIntentPerf] = useState("");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [processing, setProcessing] = useState(false);
-  const [view, setView] = useState<"folders" | AgendaRange>("folders");
+  // null = minimal home (nothing on screen); a Scope = task list is displayed.
+  const [display, setDisplay] = useState<Scope | null>(null);
 
   const refreshTasks = async () => setTasks(await listTasks("open"));
 
@@ -164,9 +168,10 @@ export default function App() {
       console.log(`[KAIROS] intent ${r.ms}ms ${r.tokensPerSec}tok/s :: ${r.json}`);
       // J4: execute the action on the local DB, then confirm out loud.
       const res = await dispatch(r.json, text);
-      if (res.view) setView(res.view); // system command: switch calendar view
+      if (res.show) setDisplay(res.show); // system command: show the task list
       await refreshTasks();
       addLog(`${res.ok ? "✓" : "✗"} ${res.tool}: ${res.speech}`);
+      console.log(`[KAIROS] action ${res.tool} ok=${res.ok} :: ${res.speech}`);
       speak(res.speech);
     } catch (e: any) {
       setIntentJson("");
@@ -225,22 +230,23 @@ export default function App() {
       }));
   })();
 
-  // Calendar views: filter tasks by resolved due_iso into day/week/month.
-  const rangeBounds = (r: AgendaRange): [number, number] => {
+  // Time-scoped views (hours/day/week/month): filter by resolved due_iso.
+  const scopeBounds = (s: Scope): [number, number] => {
     const d = new Date();
     const startOfDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-    if (r === "day") {
-      const end = new Date(startOfDay);
-      end.setDate(end.getDate() + 1);
-      return [startOfDay.getTime(), end.getTime()];
+    if (s === "hours") return [d.getTime(), d.getTime() + 6 * 3600 * 1000];
+    if (s === "day") {
+      const e = new Date(startOfDay);
+      e.setDate(e.getDate() + 1);
+      return [startOfDay.getTime(), e.getTime()];
     }
-    if (r === "week") {
+    if (s === "week") {
       const mondayOffset = (startOfDay.getDay() + 6) % 7;
-      const s = new Date(startOfDay);
-      s.setDate(s.getDate() - mondayOffset);
-      const e = new Date(s);
-      e.setDate(e.getDate() + 7);
-      return [s.getTime(), e.getTime()];
+      const ws = new Date(startOfDay);
+      ws.setDate(ws.getDate() - mondayOffset);
+      const we = new Date(ws);
+      we.setDate(we.getDate() + 7);
+      return [ws.getTime(), we.getTime()];
     }
     return [
       new Date(d.getFullYear(), d.getMonth(), 1).getTime(),
@@ -248,25 +254,31 @@ export default function App() {
     ];
   };
 
-  const agendaTasks =
-    view === "folders"
-      ? []
-      : tasks
+  const scopedTasks =
+    display && display !== "all"
+      ? tasks
           .map((t) => ({ t, ms: parseIso(t.due_iso) }))
           .filter(({ ms }) => !Number.isNaN(ms))
           .filter(({ ms }) => {
-            const [s, e] = rangeBounds(view);
+            const [s, e] = scopeBounds(display);
             return ms >= s && ms < e;
           })
           .sort((a, b) => a.ms - b.ms)
-          .map(({ t }) => t);
+          .map(({ t }) => t)
+      : [];
 
-  const VIEWS: { key: "folders" | AgendaRange; label: string }[] = [
-    { key: "folders", label: "Dossiers" },
-    { key: "day", label: "Jour" },
-    { key: "week", label: "Semaine" },
-    { key: "month", label: "Mois" },
-  ];
+  const SCOPE_TITLE: Record<Scope, string> = {
+    all: "Toutes les tâches",
+    hours: "Prochaines heures",
+    day: "Aujourd'hui",
+    week: "Cette semaine",
+    month: "Ce mois",
+  };
+
+  const STATUS_BADGE: Partial<Record<Task["status"], string>> = {
+    pending: "en attente",
+    postponed: "à reporter",
+  };
 
   const dotColor =
     status === "listening"
@@ -286,6 +298,19 @@ export default function App() {
         <View style={styles.titleRow}>
           <Text style={styles.title}>Kairos</Text>
           <View style={[styles.dot, { backgroundColor: dotColor }]} />
+          {modelStatus === "ready" && (
+            <Pressable
+              onPress={() => {
+                const phrase = TEST_PHRASES[testIdx % TEST_PHRASES.length];
+                setTestIdx((i) => i + 1);
+                runIntent(phrase);
+              }}
+              style={styles.testChip}
+              hitSlop={8}
+            >
+              <Text style={styles.testChipText}>Tester</Text>
+            </Pressable>
+          )}
         </View>
 
         {modelStatus === "loading" && (
@@ -321,6 +346,8 @@ export default function App() {
           </Pressable>
         )}
 
+        {modelStatus === "ready" && (
+          <>
         <Pressable
           onPressIn={startListening}
           onPressOut={stopListening}
@@ -335,128 +362,87 @@ export default function App() {
           </Text>
         </Pressable>
 
-        <View style={styles.viewBar}>
-          {VIEWS.map((v) => (
-            <Pressable
-              key={v.key}
-              onPress={() => setView(v.key)}
-              style={[styles.viewBtn, view === v.key && styles.viewBtnActive]}
-            >
-              <Text
-                style={[
-                  styles.viewBtnText,
-                  view === v.key && styles.viewBtnTextActive,
-                ]}
-              >
-                {v.label}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-
-        <View style={styles.tasksHeaderRow}>
-          <Text style={styles.sectionTitle}>
-            {view === "folders" ? `Mes tâches (${tasks.length})` : "Calendrier"}
-          </Text>
-          {processing && <Text style={styles.processing}>traitement…</Text>}
-        </View>
-
-        {view === "folders" ? (
-          tasks.length === 0 ? (
-            <View style={styles.tasksBox}>
-              <Text style={styles.taskEmpty}>Aucune tâche. Dicte une demande.</Text>
-            </View>
+        {display === null ? (
+          processing ? (
+            <Text style={styles.homeHint}>traitement…</Text>
           ) : (
-            // Level-1 folders -> level-2 subfolders, created on the fly.
-            folders.map((f) => (
-              <View key={f.label} style={styles.folder}>
-                <Text style={styles.folderTitle}>
-                  {f.label} ({f.count})
-                </Text>
-                {f.subs.map((s) => (
-                  <View key={s.label || "_"}>
-                    {s.label ? (
-                      <Text style={styles.subfolderTitle}>{s.label}</Text>
-                    ) : null}
-                    <View style={styles.tasksBox}>
-                      {s.items.map((t) => (
-                        <View key={t.id} style={styles.taskRow}>
-                          <Text style={styles.taskTitle}>{t.title}</Text>
-                          {t.due ? (
-                            <Text style={styles.taskDue}>{t.due}</Text>
-                          ) : null}
+            <Text style={styles.homeHint}>
+              Dis « affiche les tâches du jour », « ajoute… », « marque… ».
+            </Text>
+          )
+        ) : (
+          <>
+            <View style={styles.tasksHeaderRow}>
+              <Text style={styles.sectionTitle}>{SCOPE_TITLE[display]}</Text>
+              <Pressable onPress={() => setDisplay(null)} hitSlop={10}>
+                <Text style={styles.hideBtn}>✕ Masquer</Text>
+              </Pressable>
+            </View>
+
+            {display === "all" ? (
+              tasks.length === 0 ? (
+                <View style={styles.tasksBox}>
+                  <Text style={styles.taskEmpty}>Aucune tâche.</Text>
+                </View>
+              ) : (
+                folders.map((f) => (
+                  <View key={f.label} style={styles.folder}>
+                    <Text style={styles.folderTitle}>
+                      {f.label} ({f.count})
+                    </Text>
+                    {f.subs.map((s) => (
+                      <View key={s.label || "_"}>
+                        {s.label ? (
+                          <Text style={styles.subfolderTitle}>{s.label}</Text>
+                        ) : null}
+                        <View style={styles.tasksBox}>
+                          {s.items.map((t) => (
+                            <View key={t.id} style={styles.taskRow}>
+                              <Text style={styles.taskTitle}>{t.title}</Text>
+                              <Text style={styles.taskDue}>
+                                {STATUS_BADGE[t.status]
+                                  ? STATUS_BADGE[t.status]
+                                  : t.due ?? ""}
+                              </Text>
+                            </View>
+                          ))}
                         </View>
-                      ))}
-                    </View>
+                      </View>
+                    ))}
+                  </View>
+                ))
+              )
+            ) : scopedTasks.length === 0 ? (
+              <View style={styles.tasksBox}>
+                <Text style={styles.taskEmpty}>Rien sur cette période.</Text>
+              </View>
+            ) : (
+              <View style={styles.tasksBox}>
+                {scopedTasks.map((t) => (
+                  <View key={t.id} style={styles.taskRow}>
+                    <Text style={styles.taskTitle}>{t.title}</Text>
+                    <Text style={styles.taskDue}>
+                      {STATUS_BADGE[t.status]
+                        ? STATUS_BADGE[t.status]
+                        : t.due_iso
+                          ? fmtWhen(t.due_iso)
+                          : t.due ?? ""}
+                    </Text>
                   </View>
                 ))}
               </View>
-            ))
-          )
-        ) : agendaTasks.length === 0 ? (
-          <View style={styles.tasksBox}>
-            <Text style={styles.taskEmpty}>Rien de daté sur cette période.</Text>
-          </View>
-        ) : (
-          <View style={styles.tasksBox}>
-            {agendaTasks.map((t) => (
-              <View key={t.id} style={styles.taskRow}>
-                <Text style={styles.taskTitle}>{t.title}</Text>
-                <Text style={styles.taskDue}>
-                  {t.due_iso ? fmtWhen(t.due_iso) : t.due}
-                </Text>
-              </View>
-            ))}
-          </View>
+            )}
+          </>
         )}
 
-        <View style={styles.gemmaBox}>
-          <View style={styles.gemmaHeaderRow}>
-            <Text style={styles.toggleLabel}>Gemma 4 (on-device)</Text>
-            <Text style={styles.gemmaStatus}>{modelStatus}</Text>
-          </View>
-          <Pressable
-            onPress={loadGemma}
-            disabled={modelStatus === "loading" || modelStatus === "ready"}
-            style={[
-              styles.ttsBtn,
-              (modelStatus === "loading" || modelStatus === "ready") &&
-                styles.btnDisabled,
-            ]}
-          >
-            <Text style={styles.ttsBtnText}>
-              {modelStatus === "ready"
-                ? "Modèle chargé ✓"
-                : modelStatus === "loading"
-                  ? "Chargement…"
-                  : "Charger Gemma 4"}
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => {
-              const phrase = TEST_PHRASES[testIdx % TEST_PHRASES.length];
-              setTestIdx((i) => i + 1);
-              runIntent(phrase);
-            }}
-            disabled={modelStatus !== "ready"}
-            style={[styles.ttsBtn, modelStatus !== "ready" && styles.btnDisabled]}
-          >
-            <Text style={styles.ttsBtnText}>Tester l'intention</Text>
-          </Pressable>
-          <Text style={styles.label}>Action (JSON)</Text>
-          <Text style={styles.intentJson}>{intentJson || "—"}</Text>
-          <Text style={styles.gemmaPerf}>{intentPerf}</Text>
-        </View>
-
-        <Text style={styles.label}>Journal</Text>
-        <View style={styles.logBox}>
-          {log.map((line, i) => (
-            <Text key={i} style={styles.logLine}>
-              {line}
-            </Text>
-          ))}
-        </View>
+          </>
+        )}
       </ScrollView>
+      {/* Interaction journal: single non-scrolling line at the bottom (for
+          retrieving the last event; kept minimal to not pollute the UI). */}
+      <Text style={styles.journalLine} numberOfLines={1}>
+        {log[0] ?? ""}
+      </Text>
     </View>
   );
 }
@@ -473,6 +459,24 @@ const styles = StyleSheet.create({
   titleRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   title: { fontSize: 28, fontWeight: "800", color: "#1a1a1a" },
   dot: { width: 12, height: 12, borderRadius: 6 },
+  testChip: {
+    marginLeft: "auto",
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#d7e3ff",
+    backgroundColor: "#eef3ff",
+  },
+  testChipText: { fontSize: 11, color: "#2f6fed", fontWeight: "600" },
+  journalLine: {
+    paddingHorizontal: 20,
+    paddingVertical: 6,
+    fontSize: 11,
+    color: "#9aa0a6",
+    fontFamily: "monospace",
+    backgroundColor: "#f1f3f6",
+  },
   loadingBanner: {
     marginTop: 16,
     padding: 14,
@@ -537,6 +541,14 @@ const styles = StyleSheet.create({
   },
   sectionTitle: { fontSize: 17, fontWeight: "700", color: "#1a1a1a" },
   processing: { fontSize: 13, color: "#b8860b", fontWeight: "600" },
+  homeHint: {
+    marginTop: 28,
+    fontSize: 15,
+    color: "#9aa0a6",
+    fontStyle: "italic",
+    textAlign: "center",
+  },
+  hideBtn: { fontSize: 14, color: "#9aa0a6", fontWeight: "600" },
   folder: { marginTop: 14 },
   folderTitle: {
     fontSize: 13,

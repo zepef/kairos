@@ -1,24 +1,61 @@
-import { completeTaskByTitle, createTask, logIntent } from "./db";
+import { createTask, logIntent, setStatusByTitle, type TaskStatus } from "./db";
 
-// J4: turn Gemma's JSON action into a real DB mutation + a spoken confirmation.
-export type AgendaRange = "day" | "week" | "month";
+// J4: turn Gemma's JSON action into a real DB mutation / view change + a spoken
+// confirmation. Two intent families: data (createTask/setStatus) and system
+// (showTasks — only these put anything on screen, voice-first by design).
+export type Scope = "all" | "hours" | "day" | "week" | "month";
 export type DispatchResult = {
   ok: boolean;
   tool: string;
-  speech: string; // what the TTS should say back
-  view?: AgendaRange; // system command: switch the displayed calendar view
+  speech: string; // what the TTS says back
+  show?: Scope; // system command: display the task list for this scope
 };
 
-// Normalise the LLM-provided category ("dossier") so grouping stays consistent
-// (e.g. "santé" / "Santé " -> "Santé").
 function normalizeCategory(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const c = raw.trim().replace(/\s+/g, " ");
   if (!c) return null;
-  // Capitalize the first letter, preserve the rest (so project names like
-  // "Mon Assistant Pro" keep their casing). Grouping is case-insensitive in the UI.
+  // Capitalize first letter, preserve the rest (project names keep their casing).
   return c.charAt(0).toUpperCase() + c.slice(1);
 }
+
+const STATUS_LABEL: Record<TaskStatus, string> = {
+  todo: "à faire",
+  pending: "en attente",
+  done: "accomplie",
+  postponed: "à reporter",
+  archived: "archivée",
+};
+
+// Map free-form status (LLM or French words) to a canonical TaskStatus.
+function toStatus(raw: unknown): TaskStatus | null {
+  if (typeof raw !== "string") return null;
+  const s = raw.toLowerCase();
+  if (/(done|accompli|termin|fait|fini)/.test(s)) return "done";
+  if (/(pending|attente|attendre|bloqu)/.test(s)) return "pending";
+  if (/(postpon|report|repouss|plus tard|différ|differ)/.test(s)) return "postponed";
+  if (/(archiv)/.test(s)) return "archived";
+  if (/(todo|à faire|a faire|réactiv|reactiv)/.test(s)) return "todo";
+  return null;
+}
+
+function toScope(raw: unknown): Scope {
+  if (typeof raw !== "string") return "all";
+  const s = raw.toLowerCase();
+  if (/(hour|heure)/.test(s)) return "hours";
+  if (/(today|jour|day|aujourd)/.test(s)) return "day";
+  if (/(week|semaine)/.test(s)) return "week";
+  if (/(month|mois)/.test(s)) return "month";
+  return "all";
+}
+
+const SCOPE_LABEL: Record<Scope, string> = {
+  all: "toutes les tâches",
+  hours: "les tâches des prochaines heures",
+  day: "les tâches du jour",
+  week: "les tâches de la semaine",
+  month: "les tâches du mois",
+};
 
 export async function dispatch(
   jsonStr: string,
@@ -57,29 +94,36 @@ export async function dispatch(
       const where = [category, subcategory].filter(Boolean).join(" › ");
       out = {
         ok: true,
-        tool: obj.tool,
+        tool: "createTask",
         speech: `Tâche ajoutée${where ? ` dans ${where}` : ""} : ${obj.title}${obj.due ? `, ${obj.due}` : ""}.`,
       };
       break;
     }
-    case "completeTask": {
-      const done = await completeTaskByTitle(obj.title ?? transcript);
-      out = done
-        ? { ok: true, tool: obj.tool, speech: `C'est noté comme terminé : ${done.title}.` }
-        : { ok: false, tool: obj.tool, speech: "Je n'ai pas trouvé cette tâche." };
+    // completeTask kept as a natural alias for setStatus(done).
+    case "completeTask":
+    case "setStatus": {
+      const status =
+        obj.tool === "completeTask" ? "done" : toStatus(obj.status) ?? "done";
+      const t = await setStatusByTitle(obj.title ?? transcript, status);
+      out = t
+        ? {
+            ok: true,
+            tool: "setStatus",
+            speech: `${t.title} : ${STATUS_LABEL[status]}.`,
+          }
+        : { ok: false, tool: "setStatus", speech: "Je n'ai pas trouvé cette tâche." };
       break;
     }
+    // System / view commands: the only way to put the task list on screen.
+    case "showTasks":
     case "showAgenda":
     case "listAgenda": {
-      const range: AgendaRange =
-        obj.range === "week" || obj.range === "month" ? obj.range : "day";
-      const label =
-        range === "day" ? "la journée" : range === "week" ? "la semaine" : "le mois";
+      const scope = toScope(obj.scope ?? obj.range);
       out = {
         ok: true,
-        tool: "showAgenda",
-        speech: `Voici le calendrier de ${label}.`,
-        view: range,
+        tool: "showTasks",
+        speech: `Voici ${SCOPE_LABEL[scope]}.`,
+        show: scope,
       };
       break;
     }

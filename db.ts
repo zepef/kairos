@@ -1,10 +1,17 @@
 import * as SQLite from "expo-sqlite";
 
 // Kairos local-first store (J2). Minimal v1: tasks + intent log.
+export type TaskStatus =
+  | "todo"
+  | "pending" // en attente
+  | "done" // accomplie
+  | "postponed" // à reporter
+  | "archived"; // archivée
+
 export type Task = {
   id: number;
   title: string;
-  status: "todo" | "done";
+  status: TaskStatus;
   due: string | null; // raw expression as said ("demain 14h")
   due_iso: string | null; // resolved ISO datetime for calendar filtering
   priority: number | null;
@@ -94,47 +101,51 @@ export async function createTask(input: {
   };
 }
 
+// "open" = everything still actionable on screen (todo/pending/postponed);
+// done and archived are hidden. "all" returns every row.
 export async function listTasks(
   filter: "all" | "open" = "open",
 ): Promise<Task[]> {
-  const where = filter === "open" ? "WHERE status = 'todo'" : "";
+  const where =
+    filter === "open" ? "WHERE status NOT IN ('done','archived')" : "";
   return requireDb().getAllAsync<Task>(
-    `SELECT * FROM task ${where} ORDER BY (priority IS NULL), priority ASC, created_at DESC`,
+    `SELECT * FROM task ${where} ORDER BY (due_iso IS NULL), due_iso ASC, (priority IS NULL), priority ASC, created_at DESC`,
   );
 }
 
-// Fuzzy-ish completion: latest open task whose title contains the phrase
-// (case-insensitive), else latest open task containing any significant word.
-export async function completeTaskByTitle(
-  phrase: string,
-): Promise<Task | null> {
+// Fuzzy match the latest still-open task by phrase (full phrase, then by word).
+async function findOpenByTitle(phrase: string): Promise<Task | null> {
   const dbi = requireDb();
-  const like = `%${phrase.toLowerCase()}%`;
-  let row = await dbi.getFirstAsync<Task>(
-    "SELECT * FROM task WHERE status='todo' AND lower(title) LIKE ? ORDER BY created_at DESC LIMIT 1",
-    like,
-  );
+  const q =
+    "SELECT * FROM task WHERE status NOT IN ('done','archived') AND lower(title) LIKE ? ORDER BY created_at DESC LIMIT 1";
+  let row = await dbi.getFirstAsync<Task>(q, `%${phrase.toLowerCase()}%`);
   if (!row) {
     const words = phrase
       .toLowerCase()
       .split(/\s+/)
       .filter((w) => w.length > 3);
     for (const w of words) {
-      row = await dbi.getFirstAsync<Task>(
-        "SELECT * FROM task WHERE status='todo' AND lower(title) LIKE ? ORDER BY created_at DESC LIMIT 1",
-        `%${w}%`,
-      );
+      row = await dbi.getFirstAsync<Task>(q, `%${w}%`);
       if (row) break;
     }
   }
+  return row ?? null;
+}
+
+export async function setStatusByTitle(
+  phrase: string,
+  status: TaskStatus,
+): Promise<Task | null> {
+  const row = await findOpenByTitle(phrase);
   if (!row) return null;
-  const now = Date.now();
-  await dbi.runAsync(
-    "UPDATE task SET status='done', completed_at=? WHERE id=?",
-    now,
+  const completedAt = status === "done" ? Date.now() : null;
+  await requireDb().runAsync(
+    "UPDATE task SET status=?, completed_at=? WHERE id=?",
+    status,
+    completedAt,
     row.id,
   );
-  return { ...row, status: "done", completed_at: now };
+  return { ...row, status, completed_at: completedAt };
 }
 
 export async function logIntent(entry: {
