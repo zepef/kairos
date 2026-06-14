@@ -1,5 +1,12 @@
 import { useEffect, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import {
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { StatusBar } from "expo-status-bar";
 import * as Speech from "expo-speech";
 import {
@@ -59,6 +66,7 @@ export default function App() {
   const [testIdx, setTestIdx] = useState(0);
 
   const [modelStatus, setModelStatus] = useState<ModelStatus>("unloaded");
+  const [loadPct, setLoadPct] = useState(0);
   const [intentJson, setIntentJson] = useState("");
   const [intentPerf, setIntentPerf] = useState("");
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -67,10 +75,18 @@ export default function App() {
 
   const refreshTasks = async () => setTasks(await listTasks("open"));
 
+  // On launch: open the DB, then auto-load Gemma 4 (with progress) so the model
+  // is ready without any manual step — relaunching the app re-loads it.
   useEffect(() => {
-    initDb()
-      .then(refreshTasks)
-      .catch((e) => addLog(`✗ db init: ${e?.message ?? e}`));
+    (async () => {
+      try {
+        await initDb();
+        await refreshTasks();
+      } catch (e: any) {
+        addLog(`✗ db init: ${e?.message ?? e}`);
+      }
+      loadGemma();
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -112,9 +128,16 @@ export default function App() {
   const loadGemma = async () => {
     if (modelStatus === "loading" || modelStatus === "ready") return;
     setModelStatus("loading");
+    setLoadPct(0);
     addLog("⏳ chargement Gemma 4 E2B…");
     try {
-      const { ms } = await loadModel((p) => setIntentPerf(`chargement ${p}%`));
+      const { ms } = await loadModel((p) => {
+        // initLlama reports 0..1 or 0..100 depending on platform — normalize.
+        const pct = Math.max(0, Math.min(100, Math.round(p <= 1 ? p * 100 : p)));
+        console.log(`[KAIROS] load progress ${pct}%`);
+        setLoadPct(pct);
+      });
+      setLoadPct(100);
       setModelStatus("ready");
       setIntentPerf(`chargé en ${(ms / 1000).toFixed(1)}s`);
       addLog(`✓ Gemma 4 prêt (${(ms / 1000).toFixed(1)}s)`);
@@ -264,6 +287,39 @@ export default function App() {
           <Text style={styles.title}>Kairos</Text>
           <View style={[styles.dot, { backgroundColor: dotColor }]} />
         </View>
+
+        {modelStatus === "loading" && (
+          <View style={styles.loadingBanner}>
+            <View style={styles.loadingRow}>
+              <ActivityIndicator color="#2f6fed" />
+              <Text style={styles.loadingText}>
+                {loadPct >= 100
+                  ? "Préchauffage du modèle…"
+                  : loadPct > 0
+                    ? `Chargement de Gemma 4… ${loadPct}%`
+                    : "Chargement du modèle (≈3 Go)…"}
+              </Text>
+            </View>
+            <View style={styles.progressTrack}>
+              <View
+                style={[
+                  styles.progressFill,
+                  // Show a partial bar during the indeterminate file-load phase
+                  // (initLlama doesn't always report granular progress here).
+                  { width: `${loadPct > 0 ? loadPct : 15}%` },
+                  loadPct === 0 && styles.progressIndeterminate,
+                ]}
+              />
+            </View>
+          </View>
+        )}
+        {modelStatus === "error" && (
+          <Pressable onPress={loadGemma} style={styles.errorBanner}>
+            <Text style={styles.errorText}>
+              Échec du chargement de Gemma 4. Toucher pour réessayer.
+            </Text>
+          </Pressable>
+        )}
 
         <Pressable
           onPressIn={startListening}
@@ -417,6 +473,34 @@ const styles = StyleSheet.create({
   titleRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   title: { fontSize: 28, fontWeight: "800", color: "#1a1a1a" },
   dot: { width: 12, height: 12, borderRadius: 6 },
+  loadingBanner: {
+    marginTop: 16,
+    padding: 14,
+    borderRadius: 12,
+    backgroundColor: "#eef3ff",
+    borderWidth: 1,
+    borderColor: "#cfe0ff",
+    gap: 10,
+  },
+  loadingRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  loadingText: { fontSize: 15, color: "#2f6fed", fontWeight: "600" },
+  progressTrack: {
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#d7e3ff",
+    overflow: "hidden",
+  },
+  progressFill: { height: 8, borderRadius: 4, backgroundColor: "#2f6fed" },
+  progressIndeterminate: { backgroundColor: "#9bbcff" },
+  errorBanner: {
+    marginTop: 16,
+    padding: 14,
+    borderRadius: 12,
+    backgroundColor: "#fdecec",
+    borderWidth: 1,
+    borderColor: "#f5c2c2",
+  },
+  errorText: { fontSize: 14, color: "#c0392b", fontWeight: "600" },
   toggleLabel: { fontSize: 15, color: "#333" },
   label: {
     marginTop: 10,
