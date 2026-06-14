@@ -27,14 +27,14 @@ type ModelStatus = "unloaded" | "loading" | "ready" | "error";
 // Dev test phrases (cycled by the "Tester l'intention" button) to drive the
 // intent loop without voice.
 const TEST_PHRASES = [
+  "ajoute réviser le dossier client aujourd'hui à 18h",
   "affiche les tâches du jour",
+  "affiche les tâches du mois",
   "affiche les tâches de la semaine",
-  "affiche les tâches pour les prochaines heures",
   "affiche toutes les tâches",
-  "marque appeler le dentiste comme en attente",
+  "marque réviser le dossier client comme en attente",
   "archive la traduction anglaise",
   "reporte les tests unitaires",
-  "appelle le dentiste demain à 14h",
 ];
 
 // Robust ISO parsing: Hermes (RN engine) returns NaN for "2026-06-15T14:00"
@@ -61,6 +61,38 @@ function fmtWhen(iso: string): string {
   const d = new Date(ms);
   const p = (n: number) => String(n).padStart(2, "0");
   return `${p(d.getDate())}/${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// Level-1 folders -> level-2 subfolders (case-insensitive; first-seen label).
+// No category -> "Divers"; "" subcategory = directly in the folder.
+type Folder = {
+  label: string;
+  count: number;
+  subs: { label: string; items: Task[] }[];
+};
+function buildFolders(items: Task[]): Folder[] {
+  type Sub = { label: string; items: Task[] };
+  const map = new Map<string, { label: string; subs: Map<string, Sub> }>();
+  for (const t of items) {
+    const cat = t.category || "Divers";
+    const ck = cat.toLowerCase();
+    if (!map.has(ck)) map.set(ck, { label: cat, subs: new Map() });
+    const folder = map.get(ck)!;
+    const sub = t.subcategory || "";
+    const sk = sub.toLowerCase();
+    if (!folder.subs.has(sk)) folder.subs.set(sk, { label: sub, items: [] });
+    folder.subs.get(sk)!.items.push(t);
+  }
+  return [...map.values()]
+    .sort((a, b) => a.label.localeCompare(b.label))
+    .map((f) => ({
+      label: f.label,
+      count: [...f.subs.values()].reduce((n, s) => n + s.items.length, 0),
+      // subfolders first (named), then the folder's own loose tasks ("")
+      subs: [...f.subs.values()].sort((a, b) =>
+        a.label && b.label ? a.label.localeCompare(b.label) : a.label ? -1 : 1,
+      ),
+    }));
 }
 
 export default function App() {
@@ -202,35 +234,7 @@ export default function App() {
 
   const stopListening = () => ExpoSpeechRecognitionModule.stop();
 
-  // Level-1 folders -> level-2 subfolders (case-insensitive; first-seen label).
-  // Tasks with no category fall under "Divers"; "" subcategory = directly in the
-  // folder. Only non-empty folders/subfolders are produced.
-  const folders = (() => {
-    type Sub = { label: string; items: Task[] };
-    const map = new Map<string, { label: string; subs: Map<string, Sub> }>();
-    for (const t of tasks) {
-      const cat = t.category || "Divers";
-      const ck = cat.toLowerCase();
-      if (!map.has(ck)) map.set(ck, { label: cat, subs: new Map() });
-      const folder = map.get(ck)!;
-      const sub = t.subcategory || "";
-      const sk = sub.toLowerCase();
-      if (!folder.subs.has(sk)) folder.subs.set(sk, { label: sub, items: [] });
-      folder.subs.get(sk)!.items.push(t);
-    }
-    return [...map.values()]
-      .sort((a, b) => a.label.localeCompare(b.label))
-      .map((f) => ({
-        label: f.label,
-        count: [...f.subs.values()].reduce((n, s) => n + s.items.length, 0),
-        // subfolders first (named), then the folder's own loose tasks ("")
-        subs: [...f.subs.values()].sort((a, b) =>
-          a.label && b.label ? a.label.localeCompare(b.label) : a.label ? -1 : 1,
-        ),
-      }));
-  })();
-
-  // Time-scoped views (hours/day/week/month): filter by resolved due_iso.
+  // Temporal window (level 2) for the display command.
   const scopeBounds = (s: Scope): [number, number] => {
     const d = new Date();
     const startOfDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
@@ -254,18 +258,20 @@ export default function App() {
     ];
   };
 
-  const scopedTasks =
-    display && display !== "all"
-      ? tasks
-          .map((t) => ({ t, ms: parseIso(t.due_iso) }))
-          .filter(({ ms }) => !Number.isNaN(ms))
-          .filter(({ ms }) => {
-            const [s, e] = scopeBounds(display);
-            return ms >= s && ms < e;
-          })
-          .sort((a, b) => a.ms - b.ms)
-          .map(({ t }) => t)
-      : [];
+  // Level 2 (temporal) filters the task set; level 1 (folders) then structures
+  // it. "all" = no temporal filter (every open task); temporal scopes keep only
+  // tasks whose resolved date falls in the window.
+  const displayedTasks = (() => {
+    if (display === null) return [];
+    if (display === "all") return tasks;
+    const [s, e] = scopeBounds(display);
+    return tasks.filter((t) => {
+      const ms = parseIso(t.due_iso);
+      return !Number.isNaN(ms) && ms >= s && ms < e;
+    });
+  })();
+
+  const folders = buildFolders(displayedTasks);
 
   const SCOPE_TITLE: Record<Scope, string> = {
     all: "Toutes les tâches",
@@ -379,58 +385,44 @@ export default function App() {
               </Pressable>
             </View>
 
-            {display === "all" ? (
-              tasks.length === 0 ? (
-                <View style={styles.tasksBox}>
-                  <Text style={styles.taskEmpty}>Aucune tâche.</Text>
-                </View>
-              ) : (
-                folders.map((f) => (
-                  <View key={f.label} style={styles.folder}>
-                    <Text style={styles.folderTitle}>
-                      {f.label} ({f.count})
-                    </Text>
-                    {f.subs.map((s) => (
-                      <View key={s.label || "_"}>
-                        {s.label ? (
-                          <Text style={styles.subfolderTitle}>{s.label}</Text>
-                        ) : null}
-                        <View style={styles.tasksBox}>
-                          {s.items.map((t) => (
-                            <View key={t.id} style={styles.taskRow}>
-                              <Text style={styles.taskTitle}>{t.title}</Text>
-                              <Text style={styles.taskDue}>
-                                {STATUS_BADGE[t.status]
-                                  ? STATUS_BADGE[t.status]
-                                  : t.due ?? ""}
-                              </Text>
-                            </View>
-                          ))}
-                        </View>
-                      </View>
-                    ))}
-                  </View>
-                ))
-              )
-            ) : scopedTasks.length === 0 ? (
+            {displayedTasks.length === 0 ? (
               <View style={styles.tasksBox}>
-                <Text style={styles.taskEmpty}>Rien sur cette période.</Text>
+                <Text style={styles.taskEmpty}>
+                  {display === "all"
+                    ? "Aucune tâche."
+                    : "Rien sur cette période."}
+                </Text>
               </View>
             ) : (
-              <View style={styles.tasksBox}>
-                {scopedTasks.map((t) => (
-                  <View key={t.id} style={styles.taskRow}>
-                    <Text style={styles.taskTitle}>{t.title}</Text>
-                    <Text style={styles.taskDue}>
-                      {STATUS_BADGE[t.status]
-                        ? STATUS_BADGE[t.status]
-                        : t.due_iso
-                          ? fmtWhen(t.due_iso)
-                          : t.due ?? ""}
-                    </Text>
-                  </View>
-                ))}
-              </View>
+              // Level 1 (folders) over the level-2 (temporal) filtered set.
+              folders.map((f) => (
+                <View key={f.label} style={styles.folder}>
+                  <Text style={styles.folderTitle}>
+                    {f.label} ({f.count})
+                  </Text>
+                  {f.subs.map((s) => (
+                    <View key={s.label || "_"}>
+                      {s.label ? (
+                        <Text style={styles.subfolderTitle}>{s.label}</Text>
+                      ) : null}
+                      <View style={styles.tasksBox}>
+                        {s.items.map((t) => (
+                          <View key={t.id} style={styles.taskRow}>
+                            <Text style={styles.taskTitle}>{t.title}</Text>
+                            <Text style={styles.taskDue}>
+                              {STATUS_BADGE[t.status]
+                                ? STATUS_BADGE[t.status]
+                                : t.due_iso
+                                  ? fmtWhen(t.due_iso)
+                                  : t.due ?? ""}
+                            </Text>
+                          </View>
+                        ))}
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              ))
             )}
           </>
         )}

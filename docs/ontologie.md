@@ -78,9 +78,16 @@ Toute parole tombe dans une **intention** (`tool`). Trois familles :
 
 ### 4.2 Commandes **système / vue** (n'altèrent rien, pilotent l'écran)
 - **Afficher** : `showTasks(scope)` → la **seule** façon de mettre des tâches à l'écran.
-  - « affiche les tâches » → `all` (groupé par dossier)
-  - « pour les prochaines heures » → `hours`
-  - « du jour » → `day` · « de la semaine » → `week` · « du mois » → `month`
+
+  L'affichage se lit sur **deux niveaux composables** :
+  - **Niveau 1 — structure (dossiers).** L'écran montre toujours les tâches **groupées par dossier › sous-dossier** (cf. §2.2–2.3). C'est la colonne vertébrale spatiale/thématique.
+  - **Niveau 2 — fenêtre temporelle.** Un filtre temporel appliqué *par-dessus* la structure :
+    - « affiche les tâches » → `all` (aucun filtre — tout l'ouvert)
+    - « pour les prochaines heures » → `hours`
+    - « du jour » → `day` · « de la semaine » → `week` · « du mois » → `month`
+
+  Donc « affiche les tâches du jour » = *les tâches dont l'échéance tombe aujourd'hui, groupées par dossier*. Le temporel restreint l'ensemble ; les dossiers le structurent. (Les tâches sans date n'apparaissent que dans `all`.)
+- (futur niveau 1 alternatif) afficher **un dossier** précis, **un statut** (« ce qui est en attente »), **un projet** — toujours combinables avec le niveau 2 temporel.
 - (futur) masquer, naviguer, rechercher, trier.
 
 ### 4.3 **Inconnu**
