@@ -1,9 +1,9 @@
 import { initLlama, type LlamaContext } from "llama.rn";
 
-// On-device Gemma 4 (E2B) intent parser for Cadence.
+// On-device Gemma 4 (E2B) intent parser for Kairos.
 // The GGUF is pushed to the app's external files dir via adb (see install step).
 export const MODEL_PATH =
-  "/storage/emulated/0/Android/data/com.zepef.cadence/files/gemma-4-E2B.gguf";
+  "/storage/emulated/0/Android/data/com.zepef.kairos/files/gemma-4-E2B.gguf";
 
 let ctx: LlamaContext | null = null;
 
@@ -46,9 +46,9 @@ async function warmUp() {
       reasoning_format: "none",
       n_predict: 1, // we only care about caching the prefill, not the output
     });
-    console.log("[CADENCE] warm-up done (static prefix cached)");
+    console.log("[KAIROS] warm-up done (static prefix cached)");
   } catch (e: any) {
-    console.log(`[CADENCE] warm-up skipped: ${e?.message ?? e}`);
+    console.log(`[KAIROS] warm-up skipped: ${e?.message ?? e}`);
   }
 }
 
@@ -59,7 +59,7 @@ export async function releaseModel() {
   }
 }
 
-const SYSTEM = `Tu es l'analyseur d'intentions de Cadence, un gestionnaire de tâches vocal en français.
+const SYSTEM = `Tu es l'analyseur d'intentions de Kairos, un gestionnaire de tâches vocal en français.
 À partir d'une phrase, tu renvoies UNIQUEMENT un objet JSON décrivant l'action, sans aucun texte autour.
 Outils disponibles :
 - {"tool":"createTask","title":<string>,"due":<string|null>,"priority":<0|1|2|3|null>}
@@ -118,7 +118,7 @@ export async function parseIntent(text: string): Promise<IntentResult> {
     n && msv ? +(n / (msv / 1000)).toFixed(1) : undefined;
   // Full breakdown so we know if we are prefill-bound or decode-bound.
   console.log(
-    `[CADENCE] timings prefill=${Math.round(promptMs ?? 0)}ms/${promptN ?? "?"}tok ` +
+    `[KAIROS] timings prefill=${Math.round(promptMs ?? 0)}ms/${promptN ?? "?"}tok ` +
       `(${perSec(promptN, promptMs) ?? "?"} tok/s) | ` +
       `decode=${Math.round(predMs ?? 0)}ms/${predicted ?? "?"}tok ` +
       `(${perSec(predicted, predMs) ?? "?"} tok/s) | wall=${ms}ms`,

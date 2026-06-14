@@ -1,12 +1,5 @@
-import { useState } from "react";
-import {
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Switch,
-  Text,
-  View,
-} from "react-native";
+import { useEffect, useState } from "react";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import * as Speech from "expo-speech";
 import {
@@ -14,34 +7,34 @@ import {
   useSpeechRecognitionEvent,
 } from "expo-speech-recognition";
 import { isLoaded, loadModel, parseIntent } from "./llm";
+import { dispatch } from "./intent";
+import { initDb, listTasks, type Task } from "./db";
 
-// Cadence — STT (FR) + on-device intent parsing with Gemma 4 (E2B) via llama.rn.
-// Voice -> STT -> Gemma 4 (JSON action) -> (later) execute on local DB -> TTS.
+// Kairos — STT (FR) + on-device intent parsing with Gemma 4 (E2B) via llama.rn.
+// Voice -> STT -> Gemma 4 (JSON action) -> execute on local SQLite -> TTS.
 const LANG = "fr-FR";
 
 type Status = "idle" | "listening" | "speaking";
 type ModelStatus = "unloaded" | "loading" | "ready" | "error";
 
-// Varied utterances to verify static-prefix KV reuse across DIFFERENT inputs.
-const TEST_PHRASES = [
-  "ajoute appeler le dentiste demain à 14h",
-  "rappelle-moi d'acheter du pain ce soir",
-  "qu'est-ce que j'ai de prévu demain ?",
-  "marque la réunion budget comme terminée",
-  "crée une tâche urgente : envoyer le rapport vendredi",
-];
-
 export default function App() {
-  const [testIdx, setTestIdx] = useState(0);
   const [status, setStatus] = useState<Status>("idle");
-  const [partial, setPartial] = useState("");
-  const [finalText, setFinalText] = useState("");
-  const [preferOffline, setPreferOffline] = useState(true);
   const [log, setLog] = useState<string[]>([]);
 
   const [modelStatus, setModelStatus] = useState<ModelStatus>("unloaded");
   const [intentJson, setIntentJson] = useState("");
   const [intentPerf, setIntentPerf] = useState("");
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [processing, setProcessing] = useState(false);
+
+  const refreshTasks = async () => setTasks(await listTasks("open"));
+
+  useEffect(() => {
+    initDb()
+      .then(refreshTasks)
+      .catch((e) => addLog(`✗ db init: ${e?.message ?? e}`));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const addLog = (line: string) =>
     setLog((prev) => [line, ...prev].slice(0, 30));
@@ -54,12 +47,8 @@ export default function App() {
   useSpeechRecognitionEvent("result", (event) => {
     const transcript = event.results[0]?.transcript ?? "";
     if (event.isFinal) {
-      setFinalText(transcript);
-      setPartial("");
       addLog(`✓ final: ${transcript || "(vide)"}`);
       if (transcript && isLoaded()) runIntent(transcript);
-    } else {
-      setPartial(transcript);
     }
   });
 
@@ -69,7 +58,6 @@ export default function App() {
   });
 
   useSpeechRecognitionEvent("end", () => {
-    addLog("○ end");
     setStatus((s) => (s === "speaking" ? s : "idle"));
   });
 
@@ -92,18 +80,19 @@ export default function App() {
       setModelStatus("ready");
       setIntentPerf(`chargé en ${(ms / 1000).toFixed(1)}s`);
       addLog(`✓ Gemma 4 prêt (${(ms / 1000).toFixed(1)}s)`);
-      console.log(`[CADENCE] model ready in ${ms}ms`);
+      console.log(`[KAIROS] model ready in ${ms}ms`);
     } catch (e: any) {
       setModelStatus("error");
       addLog(`✗ load model: ${e?.message ?? e}`);
-      console.log(`[CADENCE] load error: ${e?.message ?? e}`);
+      console.log(`[KAIROS] load error: ${e?.message ?? e}`);
     }
   };
 
   const runIntent = async (text: string) => {
     setIntentJson("…");
     setIntentPerf("inférence…");
-    console.log(`[CADENCE] input :: ${text}`);
+    setProcessing(true);
+    console.log(`[KAIROS] input :: ${text}`);
     try {
       const r = await parseIntent(text);
       setIntentJson(r.json);
@@ -111,13 +100,18 @@ export default function App() {
         `total ${r.ms}ms · prefill ${r.prefillMs ?? "?"}ms/${r.prefillTokens ?? "?"}tok · ` +
           `decode ${r.decodeMs ?? "?"}ms${r.tokensPerSec ? ` @${r.tokensPerSec}tok/s` : ""}`,
       );
-      addLog(`✓ intent (${r.ms}ms): ${r.json.slice(0, 60)}`);
-      console.log(`[CADENCE] intent ${r.ms}ms ${r.tokensPerSec}tok/s :: ${r.json}`);
-      speak("C'est noté.");
+      console.log(`[KAIROS] intent ${r.ms}ms ${r.tokensPerSec}tok/s :: ${r.json}`);
+      // J4: execute the action on the local DB, then confirm out loud.
+      const res = await dispatch(r.json, text);
+      await refreshTasks();
+      addLog(`${res.ok ? "✓" : "✗"} ${res.tool}: ${res.speech}`);
+      speak(res.speech);
     } catch (e: any) {
       setIntentJson("");
       addLog(`✗ intent: ${e?.message ?? e}`);
-      console.log(`[CADENCE] intent error: ${e?.message ?? e}`);
+      console.log(`[KAIROS] intent error: ${e?.message ?? e}`);
+    } finally {
+      setProcessing(false);
     }
   };
 
@@ -127,19 +121,14 @@ export default function App() {
       addLog("✗ permission micro refusée");
       return;
     }
-    setFinalText("");
-    setPartial("");
-    addLog(`▶ start (offline préféré: ${preferOffline})`);
     ExpoSpeechRecognitionModule.start({
       lang: LANG,
       interimResults: true,
       continuous: false,
       maxAlternatives: 1,
-      // Android 12/API 31: pas de vrai on-device natif → on PRÉFÈRE l'offline,
-      // repli en ligne automatique si le pack FR n'est pas installé.
       requiresOnDeviceRecognition: false,
       androidIntentOptions: {
-        EXTRA_PREFER_OFFLINE: preferOffline,
+        EXTRA_PREFER_OFFLINE: true, // Kairos is offline-first
       },
     });
   };
@@ -161,92 +150,77 @@ export default function App() {
         contentContainerStyle={styles.container}
         keyboardShouldPersistTaps="handled"
       >
-      <Text style={styles.title}>Cadence — test vocal</Text>
-
-      <View style={styles.statusRow}>
-        <View style={[styles.dot, { backgroundColor: dotColor }]} />
-        <Text style={styles.statusText}>{status}</Text>
-      </View>
-
-      <View style={styles.toggleRow}>
-        <Text style={styles.toggleLabel}>Préférer hors-ligne (FR)</Text>
-        <Switch value={preferOffline} onValueChange={setPreferOffline} />
-      </View>
-
-      <View style={styles.transcriptBox}>
-        <Text style={styles.label}>En cours…</Text>
-        <Text style={styles.partial}>{partial || "—"}</Text>
-        <Text style={styles.label}>Reconnu</Text>
-        <Text style={styles.final}>{finalText || "—"}</Text>
-      </View>
-
-      <Pressable
-        onPressIn={startListening}
-        onPressOut={stopListening}
-        style={({ pressed }) => [
-          styles.talkBtn,
-          status === "listening" && styles.talkBtnActive,
-          pressed && styles.talkBtnPressed,
-        ]}
-      >
-        <Text style={styles.talkBtnText}>
-          {status === "listening" ? "J'écoute…" : "Maintenir pour parler"}
-        </Text>
-      </Pressable>
-
-      <Pressable
-        onPress={() => speak("Bonjour, ici Cadence. Le test audio fonctionne.")}
-        style={styles.ttsBtn}
-      >
-        <Text style={styles.ttsBtnText}>Tester la voix (TTS)</Text>
-      </Pressable>
-
-      <View style={styles.gemmaBox}>
-        <View style={styles.toggleRow}>
-          <Text style={styles.toggleLabel}>Gemma 4 (on-device)</Text>
-          <Text style={styles.gemmaStatus}>{modelStatus}</Text>
+        <View style={styles.titleRow}>
+          <Text style={styles.title}>Kairos</Text>
+          <View style={[styles.dot, { backgroundColor: dotColor }]} />
         </View>
+
         <Pressable
-          onPress={loadGemma}
-          disabled={modelStatus === "loading" || modelStatus === "ready"}
-          style={[
-            styles.ttsBtn,
-            (modelStatus === "loading" || modelStatus === "ready") &&
-              styles.btnDisabled,
+          onPressIn={startListening}
+          onPressOut={stopListening}
+          style={({ pressed }) => [
+            styles.talkBtn,
+            status === "listening" && styles.talkBtnActive,
+            pressed && styles.talkBtnPressed,
           ]}
         >
-          <Text style={styles.ttsBtnText}>
-            {modelStatus === "ready"
-              ? "Modèle chargé ✓"
-              : modelStatus === "loading"
-                ? "Chargement…"
-                : "Charger Gemma 4"}
+          <Text style={styles.talkBtnText}>
+            {status === "listening" ? "J'écoute…" : "Maintenir pour parler"}
           </Text>
         </Pressable>
-        <Pressable
-          onPress={() => {
-            const phrase = finalText || TEST_PHRASES[testIdx % TEST_PHRASES.length];
-            setTestIdx((i) => i + 1);
-            runIntent(phrase);
-          }}
-          disabled={modelStatus === "loading"}
-          style={[styles.ttsBtn, modelStatus === "loading" && styles.btnDisabled]}
-        >
-          <Text style={styles.ttsBtnText}>Tester l'intention</Text>
-        </Pressable>
-        <Text style={styles.label}>Action (JSON)</Text>
-        <Text style={styles.intentJson}>{intentJson || "—"}</Text>
-        <Text style={styles.gemmaPerf}>{intentPerf}</Text>
-      </View>
 
-      <Text style={styles.label}>Journal</Text>
-      <View style={styles.logBox}>
-        {log.map((line, i) => (
-          <Text key={i} style={styles.logLine}>
-            {line}
-          </Text>
-        ))}
-      </View>
+        <View style={styles.tasksHeaderRow}>
+          <Text style={styles.sectionTitle}>Mes tâches ({tasks.length})</Text>
+          {processing && <Text style={styles.processing}>traitement…</Text>}
+        </View>
+        <View style={styles.tasksBox}>
+          {tasks.length === 0 ? (
+            <Text style={styles.taskEmpty}>Aucune tâche. Dicte une demande.</Text>
+          ) : (
+            tasks.map((t) => (
+              <View key={t.id} style={styles.taskRow}>
+                <Text style={styles.taskTitle}>{t.title}</Text>
+                {t.due ? <Text style={styles.taskDue}>{t.due}</Text> : null}
+              </View>
+            ))
+          )}
+        </View>
+
+        <View style={styles.gemmaBox}>
+          <View style={styles.gemmaHeaderRow}>
+            <Text style={styles.toggleLabel}>Gemma 4 (on-device)</Text>
+            <Text style={styles.gemmaStatus}>{modelStatus}</Text>
+          </View>
+          <Pressable
+            onPress={loadGemma}
+            disabled={modelStatus === "loading" || modelStatus === "ready"}
+            style={[
+              styles.ttsBtn,
+              (modelStatus === "loading" || modelStatus === "ready") &&
+                styles.btnDisabled,
+            ]}
+          >
+            <Text style={styles.ttsBtnText}>
+              {modelStatus === "ready"
+                ? "Modèle chargé ✓"
+                : modelStatus === "loading"
+                  ? "Chargement…"
+                  : "Charger Gemma 4"}
+            </Text>
+          </Pressable>
+          <Text style={styles.label}>Action (JSON)</Text>
+          <Text style={styles.intentJson}>{intentJson || "—"}</Text>
+          <Text style={styles.gemmaPerf}>{intentPerf}</Text>
+        </View>
+
+        <Text style={styles.label}>Journal</Text>
+        <View style={styles.logBox}>
+          {log.map((line, i) => (
+            <Text key={i} style={styles.logLine}>
+              {line}
+            </Text>
+          ))}
+        </View>
       </ScrollView>
     </View>
   );
@@ -261,25 +235,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: 48,
   },
-  title: { fontSize: 22, fontWeight: "700", color: "#1a1a1a" },
-  statusRow: { flexDirection: "row", alignItems: "center", marginTop: 12 },
-  dot: { width: 12, height: 12, borderRadius: 6, marginRight: 8 },
-  statusText: { fontSize: 16, color: "#444" },
-  toggleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginTop: 16,
-  },
+  titleRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  title: { fontSize: 28, fontWeight: "800", color: "#1a1a1a" },
+  dot: { width: 12, height: 12, borderRadius: 6 },
   toggleLabel: { fontSize: 15, color: "#333" },
-  transcriptBox: {
-    marginTop: 16,
-    padding: 14,
-    borderRadius: 12,
-    backgroundColor: "#fff",
-    borderWidth: 1,
-    borderColor: "#eee",
-  },
   label: {
     marginTop: 10,
     fontSize: 12,
@@ -287,8 +246,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
     color: "#999",
   },
-  partial: { fontSize: 16, color: "#888", fontStyle: "italic" },
-  final: { fontSize: 20, color: "#111", fontWeight: "600" },
   talkBtn: {
     marginTop: 24,
     backgroundColor: "#2f6fed",
@@ -309,6 +266,34 @@ const styles = StyleSheet.create({
   },
   ttsBtnText: { color: "#2f6fed", fontSize: 15, fontWeight: "600" },
   btnDisabled: { opacity: 0.4 },
+  tasksHeaderRow: {
+    marginTop: 22,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  sectionTitle: { fontSize: 17, fontWeight: "700", color: "#1a1a1a" },
+  processing: { fontSize: 13, color: "#b8860b", fontWeight: "600" },
+  tasksBox: {
+    marginTop: 8,
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#eee",
+    overflow: "hidden",
+  },
+  taskEmpty: { padding: 16, color: "#999", fontStyle: "italic" },
+  taskRow: {
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#eee",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  taskTitle: { fontSize: 16, color: "#1a1a1a", flexShrink: 1 },
+  taskDue: { fontSize: 13, color: "#2f6fed", marginLeft: 10 },
   gemmaBox: {
     marginTop: 16,
     padding: 12,
@@ -317,6 +302,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#e3e8f0",
     gap: 8,
+  },
+  gemmaHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
   },
   gemmaStatus: { fontSize: 14, color: "#2f6fed", fontWeight: "600" },
   intentJson: {

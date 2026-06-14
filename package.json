@@ -1,11 +1,12 @@
 {
-  "name": "cadence",
+  "name": "kairos",
   "version": "1.0.0",
   "main": "index.ts",
   "dependencies": {
     "expo": "~56.0.11",
     "expo-speech": "~56.0.3",
     "expo-speech-recognition": "^56.0.1",
+    "expo-sqlite": "~56.0.5",
     "expo-status-bar": "~56.0.4",
     "llama.rn": "^0.12.4",
     "react": "19.2.3",
