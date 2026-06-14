@@ -13,12 +13,14 @@ import {
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,
 } from "expo-speech-recognition";
+import { isLoaded, loadModel, parseIntent } from "./llm";
 
-// Cadence — J3 walking skeleton: push-to-talk -> STT (FR) -> live transcript -> TTS echo.
-// Goal: measure on-device French STT on the target S96 (Android 12 / API 31).
+// Cadence — STT (FR) + on-device intent parsing with Gemma 4 (E2B) via llama.rn.
+// Voice -> STT -> Gemma 4 (JSON action) -> (later) execute on local DB -> TTS.
 const LANG = "fr-FR";
 
 type Status = "idle" | "listening" | "speaking";
+type ModelStatus = "unloaded" | "loading" | "ready" | "error";
 
 export default function App() {
   const [status, setStatus] = useState<Status>("idle");
@@ -26,6 +28,10 @@ export default function App() {
   const [finalText, setFinalText] = useState("");
   const [preferOffline, setPreferOffline] = useState(true);
   const [log, setLog] = useState<string[]>([]);
+
+  const [modelStatus, setModelStatus] = useState<ModelStatus>("unloaded");
+  const [intentJson, setIntentJson] = useState("");
+  const [intentPerf, setIntentPerf] = useState("");
 
   const addLog = (line: string) =>
     setLog((prev) => [line, ...prev].slice(0, 30));
@@ -41,7 +47,7 @@ export default function App() {
       setFinalText(transcript);
       setPartial("");
       addLog(`✓ final: ${transcript || "(vide)"}`);
-      if (transcript) speak(`J'ai entendu : ${transcript}`);
+      if (transcript && isLoaded()) runIntent(transcript);
     } else {
       setPartial(transcript);
     }
@@ -65,6 +71,38 @@ export default function App() {
       onStopped: () => setStatus("idle"),
       onError: () => setStatus("idle"),
     });
+  };
+
+  const loadGemma = async () => {
+    if (modelStatus === "loading" || modelStatus === "ready") return;
+    setModelStatus("loading");
+    addLog("⏳ chargement Gemma 4 E2B…");
+    try {
+      const { ms } = await loadModel((p) => setIntentPerf(`chargement ${p}%`));
+      setModelStatus("ready");
+      setIntentPerf(`chargé en ${(ms / 1000).toFixed(1)}s`);
+      addLog(`✓ Gemma 4 prêt (${(ms / 1000).toFixed(1)}s)`);
+    } catch (e: any) {
+      setModelStatus("error");
+      addLog(`✗ load model: ${e?.message ?? e}`);
+    }
+  };
+
+  const runIntent = async (text: string) => {
+    setIntentJson("…");
+    setIntentPerf("inférence…");
+    try {
+      const r = await parseIntent(text);
+      setIntentJson(r.json);
+      setIntentPerf(
+        `${r.ms} ms${r.tokensPerSec ? ` · ${r.tokensPerSec} tok/s` : ""}`,
+      );
+      addLog(`✓ intent (${r.ms}ms): ${r.json.slice(0, 60)}`);
+      speak("C'est noté.");
+    } catch (e: any) {
+      setIntentJson("");
+      addLog(`✗ intent: ${e?.message ?? e}`);
+    }
   };
 
   const startListening = async () => {
@@ -142,6 +180,42 @@ export default function App() {
         <Text style={styles.ttsBtnText}>Tester la voix (TTS)</Text>
       </Pressable>
 
+      <View style={styles.gemmaBox}>
+        <View style={styles.toggleRow}>
+          <Text style={styles.toggleLabel}>Gemma 4 (on-device)</Text>
+          <Text style={styles.gemmaStatus}>{modelStatus}</Text>
+        </View>
+        <Pressable
+          onPress={loadGemma}
+          disabled={modelStatus === "loading" || modelStatus === "ready"}
+          style={[
+            styles.ttsBtn,
+            (modelStatus === "loading" || modelStatus === "ready") &&
+              styles.btnDisabled,
+          ]}
+        >
+          <Text style={styles.ttsBtnText}>
+            {modelStatus === "ready"
+              ? "Modèle chargé ✓"
+              : modelStatus === "loading"
+                ? "Chargement…"
+                : "Charger Gemma 4"}
+          </Text>
+        </Pressable>
+        <Pressable
+          onPress={() =>
+            runIntent(finalText || "ajoute appeler le dentiste demain à 14h")
+          }
+          disabled={modelStatus !== "ready"}
+          style={[styles.ttsBtn, modelStatus !== "ready" && styles.btnDisabled]}
+        >
+          <Text style={styles.ttsBtnText}>Tester l'intention</Text>
+        </Pressable>
+        <Text style={styles.label}>Action (JSON)</Text>
+        <Text style={styles.intentJson}>{intentJson || "—"}</Text>
+        <Text style={styles.gemmaPerf}>{intentPerf}</Text>
+      </View>
+
       <Text style={styles.label}>Journal</Text>
       <ScrollView style={styles.logBox}>
         {log.map((line, i) => (
@@ -208,6 +282,26 @@ const styles = StyleSheet.create({
     borderColor: "#2f6fed",
   },
   ttsBtnText: { color: "#2f6fed", fontSize: 15, fontWeight: "600" },
+  btnDisabled: { opacity: 0.4 },
+  gemmaBox: {
+    marginTop: 16,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#e3e8f0",
+    gap: 8,
+  },
+  gemmaStatus: { fontSize: 14, color: "#2f6fed", fontWeight: "600" },
+  intentJson: {
+    fontFamily: "monospace",
+    fontSize: 13,
+    color: "#0d1117",
+    backgroundColor: "#f3f5f9",
+    borderRadius: 8,
+    padding: 8,
+  },
+  gemmaPerf: { fontSize: 12, color: "#2e9e5b", fontWeight: "600" },
   logBox: {
     marginTop: 6,
     flex: 1,
