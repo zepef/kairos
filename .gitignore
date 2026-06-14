@@ -40,3 +40,6 @@ yarn-error.*
 /ios
 /android
 node_modules
+
+# Claude Code worktrees
+.claude/worktrees/
