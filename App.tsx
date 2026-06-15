@@ -317,13 +317,6 @@ export default function App() {
     postponed: "à reporter",
   };
 
-  const dotColor =
-    status === "listening"
-      ? "#2e9e5b"
-      : status === "speaking"
-        ? "#2f6fed"
-        : "#9aa0a6";
-
   // The logo doubles as the push-to-talk button once the model is ready: hold
   // to listen. A colored halo appears while listening (green) or speaking (blue).
   const renderTalk = (size: number) => {
@@ -396,20 +389,22 @@ export default function App() {
     <View style={styles.screen}>
       <StatusBar style="dark" />
 
-      {/* Minimal top bar: status dot + dev "Tester" chip. */}
+      {/* Top bar: version label (left) + status dot + dev "Tester" chip (right). */}
       <View style={styles.topBar}>
-        <View style={[styles.dot, { backgroundColor: dotColor }]} />
-        <Pressable
-          onPress={() => {
-            const phrase = TEST_PHRASES[testIdx % TEST_PHRASES.length];
-            setTestIdx((i) => i + 1);
-            runIntent(phrase);
-          }}
-          style={styles.testChip}
-          hitSlop={8}
-        >
-          <Text style={styles.testChipText}>Tester</Text>
-        </Pressable>
+        <Text style={styles.versionLabel}>Kairos version 0.3</Text>
+        <View style={styles.topRight}>
+          <Pressable
+            onPress={() => {
+              const phrase = TEST_PHRASES[testIdx % TEST_PHRASES.length];
+              setTestIdx((i) => i + 1);
+              runIntent(phrase);
+            }}
+            style={styles.testChip}
+            hitSlop={8}
+          >
+            <Text style={styles.testChipText}>Tester</Text>
+          </Pressable>
+        </View>
       </View>
 
       {display === null ? (
@@ -531,10 +526,10 @@ const styles = StyleSheet.create({
     paddingBottom: 4,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "flex-end",
-    gap: 10,
+    justifyContent: "space-between",
   },
-  dot: { width: 12, height: 12, borderRadius: 6 },
+  versionLabel: { fontSize: 13, fontWeight: "600", color: "#9aa0a6" },
+  topRight: { flexDirection: "row", alignItems: "center", gap: 10 },
   testChip: {
     paddingVertical: 4,
     paddingHorizontal: 10,
