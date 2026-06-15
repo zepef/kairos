@@ -23,6 +23,25 @@ export type Task = {
   completed_at: number | null;
 };
 
+// Describes how to undo the last mutation (for the "annule" intent).
+export type Revert =
+  | { kind: "delete"; id: number } // undo a create
+  | { kind: "update"; id: number; fields: Record<string, unknown> } // restore columns
+  | { kind: "reinsert"; task: Task }; // undo a delete
+
+const UPDATABLE = new Set([
+  "title",
+  "due",
+  "due_iso",
+  "priority",
+  "category",
+  "subcategory",
+  "person",
+  "place",
+  "status",
+  "completed_at",
+]);
+
 let db: SQLite.SQLiteDatabase | null = null;
 
 export async function initDb(): Promise<void> {
@@ -156,6 +175,87 @@ export async function setStatusByTitle(
     row.id,
   );
   return { ...row, status, completed_at: completedAt };
+}
+
+export async function getTaskById(id: number): Promise<Task | null> {
+  return (
+    (await requireDb().getFirstAsync<Task>("SELECT * FROM task WHERE id=?", id)) ??
+    null
+  );
+}
+
+// Open tasks matching a phrase (full phrase first, then by word) — used to
+// resolve a voice reference for update/delete/status, with disambiguation.
+export async function findCandidates(
+  phrase: string,
+  limit = 6,
+): Promise<Task[]> {
+  const dbi = requireDb();
+  const q =
+    "SELECT * FROM task WHERE status NOT IN ('done','archived') AND lower(title) LIKE ? ORDER BY created_at DESC LIMIT ?";
+  let rows = await dbi.getAllAsync<Task>(q, `%${phrase.toLowerCase()}%`, limit);
+  if (rows.length === 0) {
+    const words = phrase
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((w) => w.length > 3);
+    const seen = new Set<number>();
+    const acc: Task[] = [];
+    for (const w of words) {
+      for (const r of await dbi.getAllAsync<Task>(q, `%${w}%`, limit)) {
+        if (!seen.has(r.id)) {
+          seen.add(r.id);
+          acc.push(r);
+        }
+      }
+    }
+    rows = acc.slice(0, limit);
+  }
+  return rows;
+}
+
+export async function updateTaskById(
+  id: number,
+  changes: Record<string, unknown>,
+): Promise<void> {
+  const cols = Object.keys(changes).filter((c) => UPDATABLE.has(c));
+  if (!cols.length) return;
+  const set = cols.map((c) => `${c}=?`).join(", ");
+  const vals = cols.map((c) => changes[c] ?? null);
+  await requireDb().runAsync(
+    `UPDATE task SET ${set} WHERE id=?`,
+    ...vals,
+    id,
+  );
+}
+
+export async function deleteTaskById(id: number): Promise<void> {
+  await requireDb().runAsync("DELETE FROM task WHERE id=?", id);
+}
+
+export async function insertFullTask(t: Task): Promise<void> {
+  await requireDb().runAsync(
+    "INSERT INTO task (id,title,status,due,due_iso,priority,category,subcategory,person,place,created_at,completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+    t.id,
+    t.title,
+    t.status,
+    t.due,
+    t.due_iso,
+    t.priority,
+    t.category,
+    t.subcategory,
+    t.person,
+    t.place,
+    t.created_at,
+    t.completed_at,
+  );
+}
+
+// Apply the inverse of the last mutation.
+export async function applyRevert(r: Revert): Promise<void> {
+  if (r.kind === "delete") await deleteTaskById(r.id);
+  else if (r.kind === "update") await updateTaskById(r.id, r.fields);
+  else if (r.kind === "reinsert") await insertFullTask(r.task);
 }
 
 export async function logIntent(entry: {

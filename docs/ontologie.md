@@ -74,9 +74,17 @@ Règle : une liste « ouverte » = tout sauf `done` et `archived`.
 
 Toute parole tombe dans une **intention** (`tool`). Trois familles :
 
-### 4.1 Commandes de **données** (mutations)
-- **Créer** : `createTask` → titre + échéance + dossier/sous-dossier + priorité (déduits).
-- **Changer le statut** : `setStatus` → done / pending / postponed / archived / todo.
+### 4.1 Commandes de **données** (mutations) — CRUD complet
+- **Créer** (`createTask`) → titre + échéance + dossier/sous-dossier + priorité + personne + lieu (déduits).
+- **Modifier** (`updateTask`) → change un ou plusieurs attributs d'une tâche existante (`changes` partiels) : replanifier (`due`/`dueISO`), déplacer (`category`), renommer (`title`), réaffecter (`person`/`place`), reprioriser (`priority`).
+- **Changer le statut** (`setStatus`) → done / pending / postponed / archived / todo (cas particulier d'Update, verbe distinct).
+- **Supprimer** (`deleteTask`) → suppression réelle mais **réversible** via « annule ».
+- **Annuler** (`undo`, « annule ») → défait la dernière mutation (create/update/status/delete). Rend tout réversible d'un mot.
+
+**Référence à une tâche & désambiguïsation.** Les commandes ci-dessus visent UNE tâche. Tout ce qui est affiché (mini-agenda d'accueil, liste, candidats) est **numéroté** : la façon la plus sûre de désigner une tâche est son **numéro** (« supprime la 2 », « la 3 est faite », « modifie la 1 »). À défaut, on résout par mots-clés du titre :
+- 0 correspondance → l'app le dit ;
+- 1 → on agit ;
+- plusieurs → on **affiche les candidates numérotées** et on demande « laquelle ? » ; la réponse (numéro, ordinal, mot distinctif, ou « annule ») choisit la cible.
 
 ### 4.2 Commandes **système / vue** (n'altèrent rien, pilotent l'écran)
 - **Afficher** : `showTasks(...)` → la **seule** façon de mettre des tâches à l'écran. **Masquer** (`✕`) renvoie à l'accueil vide.
@@ -131,6 +139,9 @@ Gemma est le **traducteur d'ontologie** : il fait correspondre une formulation l
 | « qu'est-ce qui est en retard ? » | `showTasks` | `scope:overdue` |
 | « affiche les tâches urgentes » | `showTasks` | `urgent:true` |
 | « rappelle-moi ce qui arrive et ce qui est en retard » | `showTasks` | `scope:reminder` |
+| « reporte la 2 à mardi 15h », « renomme la 1 en… », « range X dans Santé » | `updateTask` | `changes` partiels ; référence par **numéro** |
+| « supprime la 3 », « efface X » | `deleteTask` | réversible via « annule » |
+| « annule », « reviens en arrière » | `undo` | défait la dernière mutation |
 
 ---
 
@@ -140,6 +151,8 @@ Gemma est le **traducteur d'ontologie** : il fait correspondre une formulation l
 - Un dossier/sous-dossier **n'existe** que s'il contient au moins une tâche ouverte ; il apparaît et disparaît tout seul.
 - L'écran ne montre **que** ce qui a été demandé ; l'état par défaut est vide.
 - Une référence vocale doit résoudre vers **une** tâche existante, sinon l'app le signale (pas d'action au hasard).
+- Tout ce qui est affiché est **numéroté** ; le numéro est la référence canonique pour le CRUD.
+- Toute mutation est **réversible** par « annule » (la dernière action est mémorisée).
 
 ---
 

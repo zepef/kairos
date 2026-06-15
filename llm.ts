@@ -65,6 +65,9 @@ Outils disponibles :
 - {"tool":"createTask","title":<string>,"due":<string|null>,"dueISO":<string|null>,"priority":<0|1|2|3|null>,"category":<string>,"subcategory":<string|null>,"person":<string|null>,"place":<string|null>}
 - {"tool":"setStatus","title":<string>,"status":<"done"|"pending"|"postponed"|"archived"|"todo">}  (changer le statut d'une tâche existante)
 - {"tool":"showTasks","scope":<"all"|"hours"|"day"|"week"|"month"|"overdue"|"reminder">,"category":<string|null>,"person":<string|null>,"place":<string|null>,"status":<"pending"|"postponed"|"done"|"archived"|"todo"|null>,"urgent":<true|false>}  (commande système : AFFICHER les tâches ; ne crée/modifie rien)
+- {"tool":"updateTask","title":<référence>,"changes":{"title?":<string>,"due?":<string>,"dueISO?":<string>,"priority?":<0|1|2|3>,"category?":<string>,"subcategory?":<string>,"person?":<string>,"place?":<string>,"status?":<string>}}  (MODIFIER une tâche existante : ne mets dans "changes" QUE les champs à changer)
+- {"tool":"deleteTask","title":<référence>}  (SUPPRIMER une tâche)
+- {"tool":"undo"}  ("annule", "reviens en arrière" : défaire la dernière action)
 - {"tool":"unknown"} si rien ne correspond.
 "due" reprend l'expression temporelle telle quelle (ex: "demain 14h").
 "dueISO" = échéance résolue en date ISO 8601 ("2026-06-15T14:00") depuis la DATE ACTUELLE fournie, ou null.
@@ -83,6 +86,8 @@ showTasks : combine librement ces dimensions (toutes facultatives) :
  - status (ÉTAT) : "ce qui est en attente" -> pending ; "à reporter" -> postponed ; "accompli/fait" -> done ; "archivé" -> archived ; sinon null.
  - urgent : true si "urgentes/prioritaires/importantes", sinon false.
  Ex. "les tâches urgentes en retard pour Paul" -> {"tool":"showTasks","scope":"overdue","category":null,"person":"Paul","place":null,"status":null,"urgent":true}.
+"title" (référence) pour setStatus/updateTask/deleteTask = ce qui désigne la tâche. Les tâches affichées sont NUMÉROTÉES : si l'utilisateur cite un numéro ("supprime la 2", "la tâche 3 est faite", "modifie la 1"), mets ce numéro dans "title" (ex. "2"). Sinon mets les mots-clés du titre.
+updateTask : "reporte X à mardi 15h" -> changes.due/dueISO ; "renomme X en Y" -> changes.title="Y" ; "range X dans Santé" -> changes.category="Santé" ; "mets X urgent" -> changes.priority=3 ; "X c'est avec Paul / au bureau" -> changes.person/place.
 Réponds en JSON compact.`;
 
 export type IntentResult = {

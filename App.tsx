@@ -16,8 +16,24 @@ import {
   useSpeechRecognitionEvent,
 } from "expo-speech-recognition";
 import { isLoaded, loadModel, parseIntent } from "./llm";
-import { dispatch, taskEmoji, type Scope, type ShowSpec } from "./intent";
-import { initDb, listTasks, type Task } from "./db";
+import {
+  dispatch,
+  taskEmoji,
+  STATUS_EMOJI,
+  STATUS_LABEL,
+  type PendingAction,
+  type Scope,
+  type ShowSpec,
+} from "./intent";
+import {
+  applyRevert,
+  deleteTaskById,
+  initDb,
+  listTasks,
+  updateTaskById,
+  type Revert,
+  type Task,
+} from "./db";
 
 // Kairos — STT (FR) + on-device intent parsing with Gemma 4 (E2B) via llama.rn.
 // Voice -> STT -> Gemma 4 (JSON action) -> execute on local SQLite -> TTS.
@@ -37,14 +53,14 @@ type ModelStatus = "unloaded" | "loading" | "ready" | "error";
 const TEST_PHRASES = [
   "ajoute appeler Paul demain 10h au bureau, c'est urgent",
   "ajoute acheter du pain ce soir à la maison",
-  "affiche les tâches pour Paul",
-  "affiche les tâches au bureau",
-  "affiche ce qui est en attente",
+  "affiche toutes les tâches",
+  "marque la 1 comme faite",
+  "reporte la 2 à vendredi 9h",
+  "renomme la 1 en acheter une baguette",
+  "supprime la 1",
+  "annule",
   "qu'est-ce qui est en retard",
-  "affiche les tâches urgentes",
   "rappelle-moi ce qui arrive et ce qui est en retard",
-  "affiche toutes les tâches pour Mon Assistant Pro",
-  "affiche les tâches du jour",
 ];
 
 // Robust ISO parsing: Hermes (RN engine) returns NaN for "2026-06-15T14:00"
@@ -125,6 +141,10 @@ export default function App() {
   const [heard, setHeard] = useState("");
   const [summary, setSummary] = useState("");
   const [summaryEmoji, setSummaryEmoji] = useState("");
+  // CRUD plumbing: last undoable mutation, and a pending disambiguation.
+  const [lastRevert, setLastRevert] = useState<Revert | null>(null);
+  const [candidates, setCandidates] = useState<Task[] | null>(null);
+  const [pending, setPending] = useState<PendingAction | null>(null);
 
   // The launch loader is the native ActivityIndicator: it's animated by the
   // Android system, so it stays smooth even though the JS thread freezes in
@@ -156,6 +176,11 @@ export default function App() {
 
   useSpeechRecognitionEvent("start", () => {
     setStatus("listening");
+    // A new utterance begins: clear the previous summary right away so the top
+    // panel is replaced by the new intent (shows "À l'écoute…" meanwhile).
+    setHeard("");
+    setSummary("");
+    setSummaryEmoji("");
     addLog("● start");
   });
 
@@ -224,6 +249,41 @@ export default function App() {
   };
 
   const runIntent = async (text: string) => {
+    // Disambiguation follow-up: a mutation is waiting for which task.
+    if (pending && candidates) {
+      const sel = pickCandidate(text, candidates);
+      if (sel === "cancel") {
+        setPending(null);
+        setCandidates(null);
+        setHeard(text);
+        setSummary("Annulé.");
+        setSummaryEmoji("✖️");
+        speak("Annulé.");
+        return;
+      }
+      if (sel) {
+        setProcessing(true);
+        setHeard(text);
+        setSummary("");
+        setSummaryEmoji("");
+        try {
+          const r = await applyPending(pending, sel);
+          setPending(null);
+          setCandidates(null);
+          await refreshTasks();
+          setSummary(r.speech);
+          setSummaryEmoji(r.emoji);
+          speak(r.speech);
+        } finally {
+          setProcessing(false);
+        }
+        return;
+      }
+      // Not a selection -> treat as a brand-new command.
+      setPending(null);
+      setCandidates(null);
+    }
+
     setIntentJson("…");
     setIntentPerf("inférence…");
     setProcessing(true);
@@ -242,15 +302,43 @@ export default function App() {
           `decode ${r.decodeMs ?? "?"}ms${r.tokensPerSec ? ` @${r.tokensPerSec}tok/s` : ""}`,
       );
       console.log(`[KAIROS] intent ${r.ms}ms ${r.tokensPerSec}tok/s :: ${r.json}`);
-      // J4: execute the action on the local DB, then confirm out loud.
-      const res = await dispatch(r.json, text);
-      if (res.show) setDisplay(res.show); // system command: show the task list
-      await refreshTasks();
-      setSummary(res.speech); // understood-intent summary for the top panel
-      setSummaryEmoji(res.emoji); // symbol of the recognized task
+      // Numbers shown on screen are how the user references a task.
+      const ids = numberedList.map((t) => t.id);
+      const res = await dispatch(r.json, text, ids);
+
+      if (res.tool === "undo") {
+        let sp = "Rien à annuler.";
+        if (lastRevert) {
+          await applyRevert(lastRevert);
+          setLastRevert(null);
+          await refreshTasks();
+          sp = "C'est annulé.";
+        }
+        setSummary(sp);
+        setSummaryEmoji("↩️");
+        speak(sp);
+      } else if (res.candidates && res.pending) {
+        // Ambiguous reference: show the numbered candidates and ask which.
+        setDisplay(null);
+        setCandidates(res.candidates);
+        setPending(res.pending);
+        setSummary(res.speech);
+        setSummaryEmoji(res.emoji);
+        speak(res.speech);
+      } else {
+        if (res.show) {
+          setDisplay(res.show); // system command: show the task list
+          setCandidates(null);
+          setPending(null);
+        }
+        if (res.revert) setLastRevert(res.revert);
+        await refreshTasks();
+        setSummary(res.speech);
+        setSummaryEmoji(res.emoji);
+        speak(res.speech);
+      }
       addLog(`${res.ok ? "✓" : "✗"} ${res.tool}: ${res.speech}`);
       console.log(`[KAIROS] action ${res.tool} ok=${res.ok} :: ${res.speech}`);
-      speak(res.speech);
     } catch (e: any) {
       setIntentJson("");
       setSummary("Je n'ai pas compris.");
@@ -370,6 +458,80 @@ export default function App() {
     .filter((t) => t.status !== "done" && t.status !== "archived")
     .slice(0, 4);
 
+  // What's currently on screen, in order, is what gets numbered — and a number
+  // is how the user CRUDs on a task ("supprime la 2"). Disambiguation
+  // candidates > displayed list > home mini-agenda.
+  const flatDisplayed = folders.flatMap((f) => f.subs.flatMap((s) => s.items));
+  const numberedList: Task[] =
+    candidates ?? (display ? flatDisplayed : upcoming);
+  const numberOf = new Map(numberedList.map((t, i) => [t.id, i + 1]));
+
+  // Resolve a disambiguation reply to one candidate (number, ordinal, keyword)
+  // or "cancel".
+  const pickCandidate = (
+    text: string,
+    cands: Task[],
+  ): Task | "cancel" | null => {
+    const s = text.toLowerCase().trim();
+    if (/(annul|laisse|aucun|rien|tant pis|non merci)/.test(s)) return "cancel";
+    const num = s.match(/\b(\d{1,2})\b/);
+    if (num) {
+      const i = +num[1] - 1;
+      if (i >= 0 && i < cands.length) return cands[i];
+    }
+    const ord: [RegExp, number][] = [
+      [/premi/, 0],
+      [/deuxi|second/, 1],
+      [/troisi/, 2],
+      [/quatri/, 3],
+      [/cinqui/, 4],
+    ];
+    for (const [re, i] of ord) if (re.test(s) && i < cands.length) return cands[i];
+    if (/derni/.test(s)) return cands[cands.length - 1];
+    const hits = cands.filter((c) => {
+      const hay = `${c.title} ${c.person ?? ""} ${c.category ?? ""} ${c.place ?? ""}`.toLowerCase();
+      return s.split(/\s+/).some((w) => w.length > 3 && hay.includes(w));
+    });
+    return hits.length === 1 ? hits[0] : null;
+  };
+
+  // Run a pending mutation once its target task is chosen; record the undo.
+  const applyPending = async (
+    p: PendingAction,
+    t: Task,
+  ): Promise<{ speech: string; emoji: string }> => {
+    if (p.kind === "delete") {
+      await deleteTaskById(t.id);
+      setLastRevert({ kind: "reinsert", task: t });
+      return {
+        speech: `Supprimé : ${t.title}. Dites « annule » pour récupérer.`,
+        emoji: "🗑️",
+      };
+    }
+    if (p.kind === "status") {
+      const completedAt = p.status === "done" ? Date.now() : null;
+      await updateTaskById(t.id, { status: p.status, completed_at: completedAt });
+      setLastRevert({
+        kind: "update",
+        id: t.id,
+        fields: { status: t.status, completed_at: t.completed_at },
+      });
+      return {
+        speech: `${t.title} : ${STATUS_LABEL[p.status]}.`,
+        emoji: STATUS_EMOJI[p.status],
+      };
+    }
+    const t0 = t as any;
+    const before: Record<string, unknown> = {};
+    for (const k of Object.keys(p.changes)) before[k] = t0[k] ?? null;
+    await updateTaskById(t.id, p.changes);
+    setLastRevert({ kind: "update", id: t.id, fields: before });
+    return {
+      speech: `${(p.changes as any).title ?? t.title} : mis à jour.`,
+      emoji: "✏️",
+    };
+  };
+
   const SCOPE_TITLE: Record<Scope, string> = {
     all: "Toutes les tâches",
     hours: "Prochaines heures",
@@ -481,8 +643,9 @@ export default function App() {
     <View style={styles.screen}>
       <StatusBar style="dark" />
 
-      {/* Top summary panel: visual echo that we understood the intent. */}
-      {(processing || summary) && (
+      {/* Top summary panel: visual echo of the current intent (replaced on each
+          new utterance — listening → understanding → result). */}
+      {(status === "listening" || processing || summary) && (
         <View style={styles.topNote}>
           {heard ? (
             <Text style={styles.topNoteHeard} numberOfLines={1}>
@@ -490,17 +653,55 @@ export default function App() {
             </Text>
           ) : null}
           <View style={styles.topNoteRow}>
-            {!processing && summaryEmoji ? (
+            {!processing && status !== "listening" && summaryEmoji ? (
               <Text style={styles.topNoteEmoji}>{summaryEmoji}</Text>
             ) : null}
             <Text style={styles.topNoteSummary} numberOfLines={2}>
-              {processing ? "Compréhension en cours…" : summary}
+              {status === "listening" && !processing
+                ? "À l'écoute…"
+                : processing
+                  ? "Compréhension en cours…"
+                  : summary}
             </Text>
           </View>
         </View>
       )}
 
-      {display === null ? (
+      {candidates ? (
+        // Ambiguous reference: numbered candidates, pick one by number/voice.
+        <>
+          <ScrollView
+            style={styles.scroll}
+            contentContainerStyle={styles.container}
+            keyboardShouldPersistTaps="handled"
+          >
+            <View style={styles.tasksHeaderRow}>
+              <Text style={styles.sectionTitle}>Laquelle ?</Text>
+              <Pressable
+                onPress={() => {
+                  setCandidates(null);
+                  setPending(null);
+                }}
+                hitSlop={10}
+              >
+                <Text style={styles.hideBtn}>✕ Annuler</Text>
+              </Pressable>
+            </View>
+            <View style={styles.tasksBox}>
+              {candidates.map((t) => (
+                <View key={t.id} style={styles.taskRow}>
+                  <Text style={styles.taskNum}>{numberOf.get(t.id)}</Text>
+                  <Text style={styles.taskTitle}>{t.title}</Text>
+                  <Text style={styles.taskDue}>
+                    {t.due_iso ? fmtWhen(t.due_iso) : (t.due ?? "")}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          </ScrollView>
+          <View style={styles.dockTalk}>{renderTalk(54)}</View>
+        </>
+      ) : display === null ? (
         // Home: the logo is the push-to-talk button, with a live mini agenda
         // of upcoming tasks below it (fed as the user issues commands).
         <View style={styles.homeCenter}>
@@ -510,6 +711,7 @@ export default function App() {
               <Text style={styles.miniHeader}>À venir</Text>
               {upcoming.map((t) => (
                 <View key={t.id} style={styles.miniRow}>
+                  <Text style={styles.miniNum}>{numberOf.get(t.id)}</Text>
                   <Text style={styles.miniEmoji}>
                     {taskEmoji(t.category, t.title)}
                   </Text>
@@ -562,6 +764,9 @@ export default function App() {
                       <View style={styles.tasksBox}>
                         {s.items.map((t) => (
                           <View key={t.id} style={styles.taskRow}>
+                            <Text style={styles.taskNum}>
+                              {numberOf.get(t.id)}
+                            </Text>
                             <Text style={styles.taskTitle}>{t.title}</Text>
                             <Text style={styles.taskDue}>
                               {STATUS_BADGE[t.status]
@@ -709,6 +914,13 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#e8e8e8",
   },
+  miniNum: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#9aa0a6",
+    minWidth: 16,
+    fontVariant: ["tabular-nums"],
+  },
   miniEmoji: { fontSize: 18 },
   miniTitle: { flex: 1, fontSize: 14, color: "#1a1a1a" },
   miniDue: { fontSize: 12, color: "#2f6fed" },
@@ -774,8 +986,15 @@ const styles = StyleSheet.create({
     borderBottomColor: "#eee",
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    gap: 10,
   },
-  taskTitle: { fontSize: 16, color: "#1a1a1a", flexShrink: 1 },
-  taskDue: { fontSize: 13, color: "#2f6fed", marginLeft: 10 },
+  taskNum: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#9aa0a6",
+    minWidth: 18,
+    fontVariant: ["tabular-nums"],
+  },
+  taskTitle: { flex: 1, fontSize: 16, color: "#1a1a1a" },
+  taskDue: { fontSize: 13, color: "#2f6fed" },
 });
