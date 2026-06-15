@@ -57,7 +57,7 @@ function toCalRange(raw: unknown): CalRange {
   const s = String(raw ?? "").toLowerCase();
   if (/(week|hebdo|semaine)/.test(s)) return "week";
   if (/(month|mensuel|mois)/.test(s)) return "month";
-  if (/(year|annuel|année|annee|\ban\b)/.test(s)) return "year";
+  if (/(year|annuel|année|annee|horizon|\ban\b)/.test(s)) return "year";
   return "day";
 }
 

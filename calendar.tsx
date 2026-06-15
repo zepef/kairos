@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   Pressable,
   ScrollView,
@@ -64,6 +65,10 @@ const sameDay = (a: Date, b: Date) =>
 // Monday-based weekday index (0 = Mon … 6 = Sun).
 const wd = (d: Date) => (d.getDay() + 6) % 7;
 
+// Midnight of the given date (used to compare "is this in the future").
+const startOfDay = (d: Date) =>
+  new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+
 const open = (t: Task) => t.status !== "done" && t.status !== "archived";
 
 function Chip({ t }: { t: Task }) {
@@ -84,6 +89,11 @@ function Chip({ t }: { t: Task }) {
   );
 }
 
+type Dated = { t: Task; ms: number };
+
+// A position in the calendar: which graphical range, anchored on which date.
+type Nav = { range: CalRange; anchor: Date };
+
 export default function CalendarView({
   range,
   tasks,
@@ -95,47 +105,92 @@ export default function CalendarView({
 }) {
   const { width, height } = useWindowDimensions();
   const now = new Date();
+  // Navigation stack: the year view drills into month/day; "‹ Retour" pops back.
+  const [stack, setStack] = useState<Nav[]>([{ range, anchor: now }]);
+  const cur = stack[stack.length - 1];
+  const push = (n: Nav) => setStack((s) => [...s, n]);
+  const pop = () => setStack((s) => (s.length > 1 ? s.slice(0, -1) : s));
+
   const dated = tasks
     .filter(open)
     .map((t) => ({ t, ms: parseIso(t.due_iso) }))
     .filter((x) => !Number.isNaN(x.ms));
 
+  const a = cur.anchor;
+  const weekStart = (() => {
+    const s = new Date(a.getFullYear(), a.getMonth(), a.getDate());
+    s.setDate(s.getDate() - wd(s));
+    return s;
+  })();
   const titles: Record<CalRange, string> = {
-    day: `Aujourd'hui — ${DAYS[wd(now)].toLowerCase()} ${now.getDate()} ${MONTHS[now.getMonth()].toLowerCase()}`,
-    week: `Semaine du ${(() => {
-      const s = new Date(now);
-      s.setDate(s.getDate() - wd(now));
-      return `${s.getDate()} ${MONTHS_SHORT[s.getMonth()].toLowerCase()}`;
-    })()}`,
-    month: `${MONTHS[now.getMonth()]} ${now.getFullYear()}`,
-    year: `${now.getFullYear()}`,
+    day: `${DAYS[wd(a)].toLowerCase()} ${a.getDate()} ${MONTHS[a.getMonth()].toLowerCase()}`,
+    week: `Semaine du ${weekStart.getDate()} ${MONTHS_SHORT[weekStart.getMonth()].toLowerCase()}`,
+    month: `${MONTHS[a.getMonth()]} ${a.getFullYear()}`,
+    year: `${a.getFullYear()}`,
   };
 
   return (
     <View style={styles.root}>
       <View style={styles.header}>
-        <Text style={styles.title}>🗓️ {titles[range]}</Text>
+        <View style={styles.headerLeft}>
+          {stack.length > 1 && (
+            <Pressable onPress={pop} hitSlop={12}>
+              <Text style={styles.back}>‹ Retour</Text>
+            </Pressable>
+          )}
+          <Text style={styles.title}>🗓️ {titles[cur.range]}</Text>
+        </View>
         <Pressable onPress={onClose} hitSlop={12}>
           <Text style={styles.close}>✕ Fermer</Text>
         </Pressable>
       </View>
-      {range === "day" && <DayView now={now} dated={dated} />}
-      {range === "week" && <WeekView now={now} dated={dated} />}
-      {range === "month" && <MonthView now={now} dated={dated} w={width} />}
-      {range === "year" && <YearView now={now} dated={dated} h={height} />}
+      {cur.range === "day" && <DayView day={a} now={now} dated={dated} />}
+      {cur.range === "week" && (
+        <WeekView
+          start={weekStart}
+          now={now}
+          dated={dated}
+          onPickDay={(d) => push({ range: "day", anchor: d })}
+        />
+      )}
+      {cur.range === "month" && (
+        <MonthView
+          month={a}
+          now={now}
+          dated={dated}
+          w={width}
+          onPickDay={(d) => push({ range: "day", anchor: d })}
+        />
+      )}
+      {cur.range === "year" && (
+        <YearView
+          year={a.getFullYear()}
+          now={now}
+          dated={dated}
+          h={height}
+          onPickMonth={(d) => push({ range: "month", anchor: d })}
+          onPickDay={(d) => push({ range: "day", anchor: d })}
+        />
+      )}
     </View>
   );
 }
 
-type Dated = { t: Task; ms: number };
-
-function DayView({ now, dated }: { now: Date; dated: Dated[] }) {
+function DayView({
+  day,
+  now,
+  dated,
+}: {
+  day: Date;
+  now: Date;
+  dated: Dated[];
+}) {
   const HSTART = 7;
   const HEND = 22;
-  const today = dated.filter((x) => sameDay(new Date(x.ms), now));
+  const items0 = dated.filter((x) => sameDay(new Date(x.ms), day));
   const hours = [];
   for (let h = HSTART; h <= HEND; h++) {
-    const items = today.filter((x) => new Date(x.ms).getHours() === h);
+    const items = items0.filter((x) => new Date(x.ms).getHours() === h);
     hours.push(
       <View key={h} style={styles.hourCol}>
         <Text style={styles.hourLabel}>{String(h).padStart(2, "0")}h</Text>
@@ -154,9 +209,17 @@ function DayView({ now, dated }: { now: Date; dated: Dated[] }) {
   );
 }
 
-function WeekView({ now, dated }: { now: Date; dated: Dated[] }) {
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  start.setDate(start.getDate() - wd(now));
+function WeekView({
+  start,
+  now,
+  dated,
+  onPickDay,
+}: {
+  start: Date;
+  now: Date;
+  dated: Dated[];
+  onPickDay: (d: Date) => void;
+}) {
   const cols = [];
   for (let i = 0; i < 7; i++) {
     const d = new Date(start);
@@ -164,7 +227,11 @@ function WeekView({ now, dated }: { now: Date; dated: Dated[] }) {
     const items = dated.filter((x) => sameDay(new Date(x.ms), d));
     const isToday = sameDay(d, now);
     cols.push(
-      <View key={i} style={styles.weekCol}>
+      <Pressable
+        key={i}
+        style={styles.weekCol}
+        onPress={() => onPickDay(d)}
+      >
         <Text style={[styles.weekHead, isToday && styles.weekHeadToday]}>
           {DAYS[i]} {d.getDate()}
         </Text>
@@ -173,21 +240,33 @@ function WeekView({ now, dated }: { now: Date; dated: Dated[] }) {
             <Chip key={x.t.id} t={x.t} />
           ))}
         </ScrollView>
-      </View>,
+      </Pressable>,
     );
   }
   return <View style={styles.weekRow}>{cols}</View>;
 }
 
-function MonthView({ now, dated, w }: { now: Date; dated: Dated[]; w: number }) {
-  const year = now.getFullYear();
-  const month = now.getMonth();
-  const first = new Date(year, month, 1);
+function MonthView({
+  month,
+  now,
+  dated,
+  w,
+  onPickDay,
+}: {
+  month: Date;
+  now: Date;
+  dated: Dated[];
+  w: number;
+  onPickDay: (d: Date) => void;
+}) {
+  const year = month.getFullYear();
+  const m = month.getMonth();
+  const first = new Date(year, m, 1);
   const offset = wd(first);
-  const days = new Date(year, month + 1, 0).getDate();
+  const days = new Date(year, m + 1, 0).getDate();
   const cells: (Date | null)[] = [];
   for (let i = 0; i < offset; i++) cells.push(null);
-  for (let d = 1; d <= days; d++) cells.push(new Date(year, month, d));
+  for (let d = 1; d <= days; d++) cells.push(new Date(year, m, d));
   while (cells.length % 7 !== 0) cells.push(null);
   const cw = Math.floor((w - 24) / 7);
   return (
@@ -205,8 +284,9 @@ function MonthView({ now, dated, w }: { now: Date; dated: Dated[]; w: number }) 
           const items = dated.filter((x) => sameDay(new Date(x.ms), d));
           const isToday = sameDay(d, now);
           return (
-            <View
+            <Pressable
               key={i}
+              onPress={() => onPickDay(d)}
               style={[
                 styles.monthCell,
                 { width: cw },
@@ -227,7 +307,7 @@ function MonthView({ now, dated, w }: { now: Date; dated: Dated[]; w: number }) 
               {items.length > 0 && (
                 <Text style={styles.monthCount}>{items.length}</Text>
               )}
-            </View>
+            </Pressable>
           );
         })}
       </View>
@@ -235,46 +315,120 @@ function MonthView({ now, dated, w }: { now: Date; dated: Dated[]; w: number }) 
   );
 }
 
-function YearView({ now, dated, h }: { now: Date; dated: Dated[]; h: number }) {
-  const year = now.getFullYear();
-  // Heatmap intensity per day from task count.
+// Annual "horizon" board: months are tappable (→ month view), days that carry a
+// dated task show that task's emoji (→ day view), and a side rail lists what's
+// still coming this year so long-range commitments are never out of sight.
+function YearView({
+  year,
+  now,
+  dated,
+  h,
+  onPickMonth,
+  onPickDay,
+}: {
+  year: number;
+  now: Date;
+  dated: Dated[];
+  h: number;
+  onPickMonth: (d: Date) => void;
+  onPickDay: (d: Date) => void;
+}) {
+  // Heatmap intensity per day from task count (background under the emoji).
   const tint = (n: number) =>
-    n === 0 ? "#e2e6ec" : n === 1 ? "#bcd0ff" : n <= 3 ? "#6f9bff" : "#2f6fed";
+    n === 0 ? "#e2e6ec" : n === 1 ? "#cfe0ff" : n <= 3 ? "#9dbcff" : "#6f9bff";
+
+  // Upcoming dated tasks for the rest of the year, soonest first.
+  const todayMs = startOfDay(now);
+  const upcoming = dated
+    .filter((x) => x.ms >= todayMs && new Date(x.ms).getFullYear() === year)
+    .sort((a, b) => a.ms - b.ms)
+    .slice(0, 14);
+
   return (
-    <ScrollView contentContainerStyle={styles.yearWrap}>
-      {MONTHS.map((mName, m) => {
-        const first = new Date(year, m, 1);
-        const offset = wd(first);
-        const days = new Date(year, m + 1, 0).getDate();
-        const cells: (number | null)[] = [];
-        for (let i = 0; i < offset; i++) cells.push(null);
-        for (let d = 1; d <= days; d++) cells.push(d);
-        while (cells.length % 7 !== 0) cells.push(null);
-        return (
-          <View key={m} style={styles.miniMonth}>
-            <Text style={styles.miniTitle}>{MONTHS_SHORT[m]}</Text>
-            <View style={styles.miniGrid}>
-              {cells.map((d, i) => {
-                if (!d) return <View key={i} style={styles.miniCell} />;
-                const dt = new Date(year, m, d);
-                const n = dated.filter((x) => sameDay(new Date(x.ms), dt)).length;
-                const isToday = sameDay(dt, now);
-                return (
-                  <View
-                    key={i}
-                    style={[
-                      styles.miniCell,
-                      { backgroundColor: tint(n) },
-                      isToday && styles.miniToday,
-                    ]}
-                  />
-                );
-              })}
+    <View style={styles.yearRoot}>
+      <ScrollView contentContainerStyle={styles.yearWrap}>
+        {MONTHS.map((mName, m) => {
+          const first = new Date(year, m, 1);
+          const offset = wd(first);
+          const days = new Date(year, m + 1, 0).getDate();
+          const cells: (number | null)[] = [];
+          for (let i = 0; i < offset; i++) cells.push(null);
+          for (let d = 1; d <= days; d++) cells.push(d);
+          while (cells.length % 7 !== 0) cells.push(null);
+          return (
+            <View key={m} style={styles.miniMonth}>
+              <Pressable
+                onPress={() => onPickMonth(new Date(year, m, 1))}
+                hitSlop={6}
+              >
+                <Text style={styles.miniTitle}>{MONTHS_SHORT[m]} ›</Text>
+              </Pressable>
+              <View style={styles.miniGrid}>
+                {cells.map((d, i) => {
+                  if (!d) return <View key={i} style={styles.miniCell} />;
+                  const dt = new Date(year, m, d);
+                  const items = dated.filter((x) => sameDay(new Date(x.ms), dt));
+                  const n = items.length;
+                  const isToday = sameDay(dt, now);
+                  const emoji = n
+                    ? taskEmoji(items[0].t.category, items[0].t.title)
+                    : "";
+                  return (
+                    <Pressable
+                      key={i}
+                      disabled={n === 0}
+                      onPress={() => onPickDay(dt)}
+                      style={[
+                        styles.miniCell,
+                        { backgroundColor: tint(n) },
+                        isToday && styles.miniToday,
+                      ]}
+                    >
+                      {emoji ? (
+                        <Text style={styles.miniEmoji} numberOfLines={1}>
+                          {emoji}
+                        </Text>
+                      ) : null}
+                    </Pressable>
+                  );
+                })}
+              </View>
             </View>
-          </View>
-        );
-      })}
-    </ScrollView>
+          );
+        })}
+      </ScrollView>
+      <View style={styles.rail}>
+        <Text style={styles.railTitle}>À venir</Text>
+        <ScrollView contentContainerStyle={styles.railBody}>
+          {upcoming.length === 0 ? (
+            <Text style={styles.railEmpty}>Rien de daté à l'horizon.</Text>
+          ) : (
+            upcoming.map((x) => {
+              const d = new Date(x.ms);
+              return (
+                <Pressable
+                  key={x.t.id}
+                  style={styles.railRow}
+                  onPress={() => onPickDay(d)}
+                >
+                  <Text style={styles.railEmoji}>
+                    {taskEmoji(x.t.category, x.t.title)}
+                  </Text>
+                  <View style={styles.railText}>
+                    <Text style={styles.railDate}>
+                      {d.getDate()} {MONTHS_SHORT[d.getMonth()].toLowerCase()}
+                    </Text>
+                    <Text style={styles.railTask} numberOfLines={1}>
+                      {x.t.title}
+                    </Text>
+                  </View>
+                </Pressable>
+              );
+            })
+          )}
+        </ScrollView>
+      </View>
+    </View>
   );
 }
 
@@ -287,6 +441,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 10,
   },
+  headerLeft: { flexDirection: "row", alignItems: "center", gap: 12 },
+  back: { fontSize: 15, color: "#2f6fed", fontWeight: "700" },
   title: { fontSize: 18, fontWeight: "800", color: "#1a1a1a" },
   close: { fontSize: 15, color: "#2f6fed", fontWeight: "700" },
   chip: {
@@ -367,14 +523,16 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   // Year
+  yearRoot: { flex: 1, flexDirection: "row" },
   yearWrap: {
     flexDirection: "row",
     flexWrap: "wrap",
     paddingHorizontal: 12,
     paddingBottom: 12,
     justifyContent: "space-between",
+    flexGrow: 1,
   },
-  miniMonth: { width: "24%", marginBottom: 12 },
+  miniMonth: { width: "30%", marginBottom: 12 },
   miniTitle: {
     fontSize: 12,
     fontWeight: "700",
@@ -388,6 +546,37 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     borderWidth: 1,
     borderColor: "#edf0f4",
+    alignItems: "center",
+    justifyContent: "center",
   },
+  miniEmoji: { fontSize: 11 },
   miniToday: { borderColor: "#1a1a1a", borderWidth: 1.5 },
+  // Year — "À venir" side rail
+  rail: {
+    width: 220,
+    backgroundColor: "#f8fafc",
+    borderLeftWidth: 1,
+    borderLeftColor: "#dfe4ec",
+    paddingHorizontal: 12,
+    paddingTop: 4,
+  },
+  railTitle: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#1e3a8a",
+    marginBottom: 8,
+  },
+  railBody: { paddingBottom: 16 },
+  railEmpty: { fontSize: 12, color: "#7a869a", fontStyle: "italic" },
+  railRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#e2e6ec",
+  },
+  railEmoji: { fontSize: 18, marginRight: 8 },
+  railText: { flex: 1 },
+  railDate: { fontSize: 11, fontWeight: "700", color: "#2f6fed" },
+  railTask: { fontSize: 12, color: "#1a1a1a", fontWeight: "600" },
 });
