@@ -5,6 +5,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   View,
 } from "react-native";
@@ -22,8 +23,11 @@ import { initDb, listTasks, type Task } from "./db";
 // Voice -> STT -> Gemma 4 (JSON action) -> execute on local SQLite -> TTS.
 const LANG = "fr-FR";
 
-// Clean Kairos chevron (transparent background) — centered on the launch screen.
-const LOGO = require("./assets/android-icon-foreground.png");
+// Kairos logo — centered on the launch screen and used as the PTT button.
+const LOGO = require("./assets/kairos-logo.png");
+// Shared sizing so the logo + circle are identical on the launch screen and the
+// push-to-talk button (PTT sizing validated as "perfect": 132 logo, +30 ring).
+const LOGO_SIZE = 132;
 
 type Status = "idle" | "listening" | "speaking";
 type ModelStatus = "unloaded" | "loading" | "ready" | "error";
@@ -112,6 +116,7 @@ export default function App() {
   // null = minimal home (nothing on screen); a ShowSpec = task list is displayed
   // (WHAT folder × WHEN temporal scope).
   const [display, setDisplay] = useState<ShowSpec | null>(null);
+  const [ttsOn, setTtsOn] = useState(true);
 
   // The launch loader is the native ActivityIndicator: it's animated by the
   // Android system, so it stays smooth even though the JS thread freezes in
@@ -162,6 +167,7 @@ export default function App() {
   });
 
   const speak = (text: string) => {
+    if (!ttsOn) return; // voice output disabled via the TTS toggle
     setStatus("speaking");
     Speech.speak(text, {
       language: LANG,
@@ -176,7 +182,7 @@ export default function App() {
     setModelStatus("loading");
     setLoadPct(0);
     warmAnnounced.current = false;
-    addLog("⏳ chargement Gemma 4 E2B…");
+    addLog("⏳ chargement…");
     // Voice cue: the only thing the app says while the model file loads.
     speak("Patienter pendant le chargement du modèle.");
     try {
@@ -188,13 +194,13 @@ export default function App() {
         // File done -> warm-up begins; announce it once.
         if (pct >= 100 && !warmAnnounced.current) {
           warmAnnounced.current = true;
-          speak("Préchauffage du système.");
+          speak("Initialisation du système.");
         }
       });
       setLoadPct(100);
       setModelStatus("ready");
       setIntentPerf(`chargé en ${(ms / 1000).toFixed(1)}s`);
-      addLog(`✓ Gemma 4 prêt (${(ms / 1000).toFixed(1)}s)`);
+      addLog(`✓ prêt (${(ms / 1000).toFixed(1)}s)`);
       console.log(`[KAIROS] model ready in ${ms}ms`);
       // PTT now visible: tell the user how to use it (once — loadGemma runs once).
       speak(
@@ -212,6 +218,9 @@ export default function App() {
     setIntentPerf("inférence…");
     setProcessing(true);
     console.log(`[KAIROS] input :: ${text}`);
+    // Bridge the wait (on-device inference takes a few seconds) until we can
+    // confirm what was understood.
+    speak("Un instant s'il vous plaît.");
     try {
       const r = await parseIntent(text);
       setIntentJson(r.json);
@@ -366,10 +375,13 @@ export default function App() {
             <View style={styles.loaderWrap}>
               <Image source={LOGO} style={styles.logo} resizeMode="contain" />
             </View>
-            {/* Percentage just below the circle. */}
+            {/* Below the circle: percentage, replaced by a wait message at 100%
+                (the model is then warming up). */}
             {modelStatus !== "error" && (
               <View style={styles.pctWrap}>
-                <Text style={styles.loadPct}>{loadPct}%</Text>
+                <Text style={styles.loadPct}>
+                  {loadPct >= 100 ? "Un instant SVP" : `${loadPct}%`}
+                </Text>
               </View>
             )}
           </View>
@@ -391,7 +403,7 @@ export default function App() {
 
       {display === null ? (
         // Home: the logo sits centered and IS the push-to-talk button.
-        <View style={styles.homeCenter}>{renderTalk(132)}</View>
+        <View style={styles.homeCenter}>{renderTalk(LOGO_SIZE)}</View>
       ) : (
         // A system command showed tasks: list them, keep talk available below.
         <>
@@ -459,25 +471,32 @@ export default function App() {
         </>
       )}
 
-      {/* Interaction journal: single non-scrolling line (kept minimal). */}
-      <Text style={styles.journalLine} numberOfLines={1}>
-        {log[0] ?? ""}
-      </Text>
-
-      {/* Bottom bar: version label (left) + dev "Tester" chip (right). */}
+      {/* Bottom bar: version (left) + TTS toggle + dev "Tester" chip (right). */}
       <View style={styles.bottomBar}>
         <Text style={styles.versionLabel}>Kairos version 0.3</Text>
-        <Pressable
-          onPress={() => {
-            const phrase = TEST_PHRASES[testIdx % TEST_PHRASES.length];
-            setTestIdx((i) => i + 1);
-            runIntent(phrase);
-          }}
-          style={styles.testChip}
-          hitSlop={8}
-        >
-          <Text style={styles.testChipText}>Tester</Text>
-        </Pressable>
+        <View style={styles.bottomRight}>
+          <View style={styles.ttsToggle}>
+            <Text style={styles.ttsLabel}>TTS</Text>
+            <Switch
+              value={ttsOn}
+              onValueChange={setTtsOn}
+              trackColor={{ true: "#2f6fed", false: "#cfd4da" }}
+              thumbColor="#ffffff"
+              style={styles.ttsSwitch}
+            />
+          </View>
+          <Pressable
+            onPress={() => {
+              const phrase = TEST_PHRASES[testIdx % TEST_PHRASES.length];
+              setTestIdx((i) => i + 1);
+              runIntent(phrase);
+            }}
+            style={styles.testChip}
+            hitSlop={8}
+          >
+            <Text style={styles.testChipText}>Tester</Text>
+          </Pressable>
+        </View>
       </View>
     </View>
   );
@@ -500,16 +519,16 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     alignItems: "center",
     justifyContent: "center",
-    transform: [{ translateY: 65 }],
+    transform: [{ translateY: 88 }],
   },
-  loaderSpin: { transform: [{ scale: 3 }] },
-  logo: { width: 96, height: 96 },
+  loaderSpin: { transform: [{ scale: 5.2 }] },
+  logo: { width: LOGO_SIZE, height: LOGO_SIZE },
   // Centered like the logo, then pushed down to sit just below the circle.
   pctWrap: {
     ...StyleSheet.absoluteFillObject,
     alignItems: "center",
     justifyContent: "center",
-    transform: [{ translateY: 10 }],
+    transform: [{ translateY: 26 }],
   },
   loadPct: {
     fontSize: 14,
@@ -528,6 +547,10 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   versionLabel: { fontSize: 13, fontWeight: "600", color: "#9aa0a6" },
+  bottomRight: { flexDirection: "row", alignItems: "center", gap: 14 },
+  ttsToggle: { flexDirection: "row", alignItems: "center", gap: 4 },
+  ttsLabel: { fontSize: 12, fontWeight: "600", color: "#9aa0a6" },
+  ttsSwitch: { transform: [{ scale: 0.8 }] },
   testChip: {
     paddingVertical: 4,
     paddingHorizontal: 10,
@@ -544,14 +567,6 @@ const styles = StyleSheet.create({
   talkRing: { position: "absolute", borderWidth: 6, borderColor: "#2f6fed" },
   talkRingListening: { borderColor: "#2e9e5b" },
   dockTalk: { alignItems: "center", paddingVertical: 6 },
-  journalLine: {
-    paddingHorizontal: 20,
-    paddingVertical: 6,
-    fontSize: 11,
-    color: "#9aa0a6",
-    fontFamily: "monospace",
-    backgroundColor: "#f1f3f6",
-  },
   errorBanner: {
     marginTop: 16,
     padding: 14,
