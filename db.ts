@@ -17,6 +17,8 @@ export type Task = {
   priority: number | null;
   category: string | null; // level-1 folder
   subcategory: string | null; // level-2 sub-folder
+  person: string | null; // WHO — associated person
+  place: string | null; // WHERE — place / context
   created_at: number;
   completed_at: number | null;
 };
@@ -54,6 +56,8 @@ export async function initDb(): Promise<void> {
     "category TEXT",
     "subcategory TEXT",
     "due_iso TEXT",
+    "person TEXT",
+    "place TEXT",
   ]) {
     try {
       await db.execAsync(`ALTER TABLE task ADD COLUMN ${col}`);
@@ -75,16 +79,20 @@ export async function createTask(input: {
   priority?: number | null;
   category?: string | null;
   subcategory?: string | null;
+  person?: string | null;
+  place?: string | null;
 }): Promise<Task> {
   const now = Date.now();
   const res = await requireDb().runAsync(
-    "INSERT INTO task (title, status, due, due_iso, priority, category, subcategory, created_at) VALUES (?, 'todo', ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO task (title, status, due, due_iso, priority, category, subcategory, person, place, created_at) VALUES (?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?)",
     input.title,
     input.due ?? null,
     input.dueIso ?? null,
     input.priority ?? null,
     input.category ?? null,
     input.subcategory ?? null,
+    input.person ?? null,
+    input.place ?? null,
     now,
   );
   return {
@@ -96,6 +104,8 @@ export async function createTask(input: {
     priority: input.priority ?? null,
     category: input.category ?? null,
     subcategory: input.subcategory ?? null,
+    person: input.person ?? null,
+    place: input.place ?? null,
     created_at: now,
     completed_at: null,
   };

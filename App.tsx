@@ -35,13 +35,16 @@ type ModelStatus = "unloaded" | "loading" | "ready" | "error";
 // Dev test phrases (cycled by the "Tester l'intention" button) to drive the
 // intent loop without voice.
 const TEST_PHRASES = [
+  "ajoute appeler Paul demain 10h au bureau, c'est urgent",
+  "ajoute acheter du pain ce soir à la maison",
+  "affiche les tâches pour Paul",
+  "affiche les tâches au bureau",
+  "affiche ce qui est en attente",
+  "qu'est-ce qui est en retard",
+  "affiche les tâches urgentes",
+  "rappelle-moi ce qui arrive et ce qui est en retard",
   "affiche toutes les tâches pour Mon Assistant Pro",
-  "affiche les tâches du dossier Kairos",
   "affiche les tâches du jour",
-  "affiche toutes les tâches",
-  "affiche les tâches de la semaine pour Kairos",
-  "marque réviser le dossier client comme en attente",
-  "archive la traduction anglaise",
 ];
 
 // Robust ISO parsing: Hermes (RN engine) returns NaN for "2026-06-15T14:00"
@@ -124,7 +127,9 @@ export default function App() {
   // stutter during those freezes).
   const warmAnnounced = useRef(false);
 
-  const refreshTasks = async () => setTasks(await listTasks("open"));
+  // Load every row; displayedTasks decides open-vs-status per the display spec
+  // (so an explicit ÉTAT filter like "accomplies" can surface done/archived).
+  const refreshTasks = async () => setTasks(await listTasks("all"));
 
   // On launch: open the DB, then auto-load Gemma 4 (with progress) so the model
   // is ready without any manual step — relaunching the app re-loads it.
@@ -289,19 +294,53 @@ export default function App() {
     ];
   };
 
-  // Level 2 (temporal) filters the task set; level 1 (folders) then structures
-  // it. "all" = no temporal filter (every open task); temporal scopes keep only
-  // tasks whose resolved date falls in the window.
+  // Apply every composable display dimension (each optional):
+  // ÉTAT (status) × QUOI (category) × QUI (person) × OÙ (place) × URGENT
+  // × QUAND (scope, incl. overdue / reminder). The folders view then structures
+  // whatever survives.
   const displayedTasks = (() => {
     if (display === null) return [];
     let set = tasks;
-    // Level 1 (WHAT): optional folder/category filter.
+    // ÉTAT: explicit status filter, else default to the open list.
+    if (display.status) {
+      set = set.filter((t) => t.status === display.status);
+    } else {
+      set = set.filter((t) => t.status !== "done" && t.status !== "archived");
+    }
+    // QUOI (folder/project)
     if (display.category) {
       const c = display.category.toLowerCase();
       set = set.filter((t) => (t.category || "").toLowerCase() === c);
     }
-    // Level 2 (WHEN): optional temporal window.
-    if (display.scope !== "all") {
+    // QUI (person) — fuzzy contains
+    if (display.person) {
+      const p = display.person.toLowerCase();
+      set = set.filter((t) => (t.person || "").toLowerCase().includes(p));
+    }
+    // OÙ (place) — fuzzy contains
+    if (display.place) {
+      const pl = display.place.toLowerCase();
+      set = set.filter((t) => (t.place || "").toLowerCase().includes(pl));
+    }
+    // URGENT — priority high (2–3)
+    if (display.urgent) {
+      set = set.filter((t) => (t.priority ?? 0) >= 2);
+    }
+    // QUAND (temporal)
+    const now = Date.now();
+    if (display.scope === "overdue") {
+      set = set.filter((t) => {
+        const ms = parseIso(t.due_iso);
+        return !Number.isNaN(ms) && ms < now;
+      });
+    } else if (display.scope === "reminder") {
+      // à venir bientôt (≤ 24 h) OU en retard
+      const soon = now + 24 * 3600 * 1000;
+      set = set.filter((t) => {
+        const ms = parseIso(t.due_iso);
+        return !Number.isNaN(ms) && ms < soon;
+      });
+    } else if (display.scope !== "all") {
       const [s, e] = scopeBounds(display.scope);
       set = set.filter((t) => {
         const ms = parseIso(t.due_iso);
@@ -319,7 +358,30 @@ export default function App() {
     day: "Aujourd'hui",
     week: "Cette semaine",
     month: "Ce mois",
+    overdue: "En retard",
+    reminder: "Rappel",
   };
+
+  const STATUS_TITLE: Partial<Record<Task["status"], string>> = {
+    todo: "à faire",
+    pending: "en attente",
+    postponed: "à reporter",
+    done: "accomplies",
+    archived: "archivées",
+  };
+
+  // Header reflecting every active display dimension, e.g.
+  // "En retard · urgent · avec Paul".
+  const displayTitle = (() => {
+    if (display === null) return "";
+    const bits: string[] = [SCOPE_TITLE[display.scope]];
+    if (display.status) bits.push(STATUS_TITLE[display.status] ?? "");
+    if (display.urgent) bits.push("urgent");
+    if (display.category) bits.push(`pour ${display.category}`);
+    if (display.person) bits.push(`avec ${display.person}`);
+    if (display.place) bits.push(`à ${display.place}`);
+    return bits.filter(Boolean).join(" · ");
+  })();
 
   const STATUS_BADGE: Partial<Record<Task["status"], string>> = {
     pending: "en attente",
@@ -413,13 +475,7 @@ export default function App() {
             keyboardShouldPersistTaps="handled"
           >
             <View style={styles.tasksHeaderRow}>
-              <Text style={styles.sectionTitle}>
-                {display.category
-                  ? display.scope === "all"
-                    ? display.category
-                    : `${display.category} · ${SCOPE_TITLE[display.scope].toLowerCase()}`
-                  : SCOPE_TITLE[display.scope]}
-              </Text>
+              <Text style={styles.sectionTitle}>{displayTitle}</Text>
               <Pressable onPress={() => setDisplay(null)} hitSlop={10}>
                 <Text style={styles.hideBtn}>✕ Masquer</Text>
               </Pressable>
@@ -428,11 +484,9 @@ export default function App() {
             {displayedTasks.length === 0 ? (
               <View style={styles.tasksBox}>
                 <Text style={styles.taskEmpty}>
-                  {display.category
-                    ? `Aucune tâche pour ${display.category}.`
-                    : display.scope === "all"
-                      ? "Aucune tâche."
-                      : "Rien sur cette période."}
+                  {display.scope === "overdue"
+                    ? "Rien en retard."
+                    : "Aucune tâche pour ces critères."}
                 </Text>
               </View>
             ) : (

@@ -24,10 +24,12 @@ La seule chose que l'utilisateur crée. Tout le reste (dossiers, vues) en dériv
 | `title` | l'action concrète, nettoyée du préambule (« traduction anglaise », pas « pour le projet X, ajoute… ») |
 | `due` | échéance **telle que dite** (« demain 14h », « ce soir ») — fidèle à la voix |
 | `due_iso` | la même échéance **résolue** en date absolue (ISO) → permet le filtrage temporel |
-| `priority` | 0–3 (optionnel) |
-| `category` | **dossier** (niveau 1) |
+| `priority` | 0–3 (optionnel) ; déduite si urgence exprimée → base du filtre **URGENT** |
+| `category` | **dossier** (niveau 1) — **QUOI** |
 | `subcategory` | **sous-dossier** (niveau 2, optionnel) |
-| `status` | état dans le cycle de vie (voir §3) |
+| `person` | **QUI** — personne associée (« avec Paul », « le dentiste ») |
+| `place` | **OÙ** — lieu / contexte (« au bureau », « à la maison ») |
+| `status` | état dans le cycle de vie (voir §3) — **ÉTAT** |
 | `created_at` / `completed_at` | horodatage |
 
 ### 2.2 Dossier (`category`) — niveau 1, émergent
@@ -39,7 +41,7 @@ Regroupement **créé à la volée** quand il est mentionné ; jamais affiché s
 Subdivision d'un dossier (ex. *Mon Assistant Pro › UI*, *Kairos › Tests*). Hiérarchie : **Dossier › Sous-dossier › Tâche**. Une tâche peut vivre directement dans son dossier (sans sous-dossier).
 
 ### 2.4 Portée temporelle (`scope`) — dimension de lecture
-Pas une entité stockée, mais une **fenêtre** sur les tâches datées : `hours` (prochaines heures), `day` (jour), `week` (semaine), `month` (mois), `all` (tout, groupé par dossier).
+Pas une entité stockée, mais une **fenêtre** sur les tâches datées : `all` (tout), `hours` (prochaines heures), `day` (jour), `week` (semaine), `month` (mois), **`overdue`** (en retard, échéance dépassée), **`reminder`** (RAPPEL = à venir sous 24 h **+** en retard).
 
 ---
 
@@ -77,20 +79,23 @@ Toute parole tombe dans une **intention** (`tool`). Trois familles :
 - **Changer le statut** : `setStatus` → done / pending / postponed / archived / todo.
 
 ### 4.2 Commandes **système / vue** (n'altèrent rien, pilotent l'écran)
-- **Afficher** : `showTasks(scope)` → la **seule** façon de mettre des tâches à l'écran.
+- **Afficher** : `showTasks(...)` → la **seule** façon de mettre des tâches à l'écran. **Masquer** (`✕`) renvoie à l'accueil vide.
 
-  L'affichage se lit sur **deux niveaux composables** :
-  - **Niveau 1 — structure (dossiers).** L'écran montre toujours les tâches **groupées par dossier › sous-dossier** (cf. §2.2–2.3). C'est la colonne vertébrale spatiale/thématique.
-  - **Niveau 2 — fenêtre temporelle.** Un filtre temporel appliqué *par-dessus* la structure :
-    - « affiche les tâches » → `all` (aucun filtre — tout l'ouvert)
-    - « pour les prochaines heures » → `hours`
-    - « du jour » → `day` · « de la semaine » → `week` · « du mois » → `month`
+  L'écran montre toujours les tâches **groupées par dossier › sous-dossier** (§2.2–2.3) : c'est la structure. Par-dessus, **six dimensions de filtrage entièrement composables** (chacune facultative ; leur intersection définit l'ensemble affiché) :
 
-  Donc « affiche les tâches du jour » = *les tâches dont l'échéance tombe aujourd'hui, groupées par dossier*. Le temporel restreint l'ensemble ; les dossiers le structurent. (Les tâches sans date n'apparaissent que dans `all`.)
+  | Dimension | Question | Paramètre | Valeurs |
+  |---|---|---|---|
+  | **QUOI** | quel dossier/projet | `category` | nom de dossier/projet ou `null` |
+  | **QUAND** | quelle fenêtre | `scope` | `all`/`hours`/`day`/`week`/`month`/`overdue`/`reminder` |
+  | **QUI** | quelle personne | `person` | nom ou `null` |
+  | **OÙ** | quel lieu/contexte | `place` | lieu ou `null` |
+  | **ÉTAT** | quel statut | `status` | `pending`/`postponed`/`done`/`archived`/`todo` ou `null` |
+  | **URGENT** | priorité haute | `urgent` | `true`/`false` (priorité ≥ 2) |
 
-  Le niveau « quoi » est lui-même paramétrable par un **sélecteur de dossier/projet** (`category`) : « affiche toutes les tâches **pour Mon Assistant Pro** » → seul ce dossier. **QUOI × QUAND se combinent** : « affiche les tâches de la semaine pour Kairos » → dossier *Kairos* ∩ fenêtre *semaine*.
-- (futur niveau 1 alternatif) sélecteur par **statut** (« ce qui est en attente / à reporter »), par personne, par lieu — toujours combinables avec le niveau 2 temporel.
-- (futur) masquer, naviguer, rechercher, trier.
+  Exemples composés : « affiche les tâches de la semaine pour Kairos » → `scope:week, category:"Kairos"` · « les tâches urgentes en retard pour Paul » → `scope:overdue, urgent:true, person:"Paul"` · « ce qui est en attente au bureau » → `status:pending, place:"Bureau"`.
+
+  Règles : sans mention temporelle, `scope:all`. Sans filtre `status`, la liste est « ouverte » (exclut `done`/`archived`) ; un `status` explicite peut faire ressortir `done`/`archived`. Les tâches sans date n'apparaissent pas dans les fenêtres temporelles (seulement `all`). `overdue` = échéance < maintenant ; `reminder` = échéance ≤ +24 h (donc à venir + déjà en retard).
+- (futur) **COMMENT** (type d'action : appel/email/rdv/achat), **POURQUOI** (objectif), **DURÉE/EFFORT**, **RÉCURRENCE** ; modificateurs **TRI** et **MODE** (liste vs résumé/compte) ; masquer ciblé, rechercher.
 
 ### 4.3 **Inconnu**
 - `unknown` quand rien ne correspond → l'app le dit, ne devine pas.
@@ -114,12 +119,18 @@ Gemma est le **traducteur d'ontologie** : il fait correspondre une formulation l
 
 | On dit… | Intention | Détail |
 |---|---|---|
-| « ajoute… », « rappelle-moi… », « pour le projet X… » | `createTask` | dossier = thème ou projet |
+| « ajoute… », « rappelle-moi de… », « pour le projet X… », « appeler Paul au bureau, urgent » | `createTask` | dossier = thème ou projet ; `person`/`place`/`priority` déduits |
 | « marque X en attente » | `setStatus` | pending |
 | « X est faite / accomplie » | `setStatus` | done |
 | « reporte X / plus tard » | `setStatus` | postponed |
 | « archive X » | `setStatus` | archived |
-| « affiche les tâches [du jour / de la semaine / prochaines heures] » | `showTasks` | scope |
+| « affiche les tâches [du jour / de la semaine / prochaines heures / du mois] » | `showTasks` | `scope` |
+| « affiche les tâches pour Paul » | `showTasks` | `person` (QUI) |
+| « affiche les tâches au bureau » | `showTasks` | `place` (OÙ) |
+| « affiche ce qui est en attente / à reporter » | `showTasks` | `status` (ÉTAT) |
+| « qu'est-ce qui est en retard ? » | `showTasks` | `scope:overdue` |
+| « affiche les tâches urgentes » | `showTasks` | `urgent:true` |
+| « rappelle-moi ce qui arrive et ce qui est en retard » | `showTasks` | `scope:reminder` |
 
 ---
 
@@ -135,9 +146,10 @@ Gemma est le **traducteur d'ontologie** : il fait correspondre une formulation l
 ## 8. Extensions futures (cohérentes avec ce modèle)
 
 - **Niveau 3** : sous-sous-dossiers (ex. *Projet › UI › i18n*).
-- **Projet** comme entité first-class (description, échéance globale, avancement) au-delà du simple dossier-nom.
+- **Projet** comme entité first-class (description, échéance globale, avancement) au-delà du simple dossier-nom — base de la dimension **POURQUOI**.
 - **Dépendances** entre tâches (DAG) → « tâche bloquée tant que… », `whatNext`.
 - **Récurrence** (« tous les lundis »).
-- **Rappels / notifications** déclenchés par `due_iso`.
-- **Contexte** : lieu (« quand je suis au bureau »), personnes.
-- **Commandes système avancées** : « range ce dossier », « résume ma semaine », « qu'est-ce qui est en retard ? ».
+- **Notifications** push déclenchées par `due_iso` (au-delà du RAPPEL à l'écran).
+- **Dimensions de filtrage restantes** : **COMMENT** (type d'action : appel/email/rdv/achat), **DURÉE/EFFORT**.
+- **Modificateurs d'affichage** : **TRI** (par échéance/priorité), **MODE** (liste vs résumé/compte : « résume ma semaine », « combien de tâches pour X »).
+- **Commandes système avancées** : « range ce dossier », recherche plein-texte.

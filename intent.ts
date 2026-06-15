@@ -3,9 +3,25 @@ import { createTask, logIntent, setStatusByTitle, type TaskStatus } from "./db";
 // J4: turn Gemma's JSON action into a real DB mutation / view change + a spoken
 // confirmation. Two intent families: data (createTask/setStatus) and system
 // (showTasks — only these put anything on screen, voice-first by design).
-export type Scope = "all" | "hours" | "day" | "week" | "month";
-// A display request: WHAT (optional folder) × WHEN (temporal scope).
-export type ShowSpec = { scope: Scope; category: string | null };
+export type Scope =
+  | "all"
+  | "hours"
+  | "day"
+  | "week"
+  | "month"
+  | "overdue" // EN RETARD — échéance dépassée
+  | "reminder"; // RAPPEL — à venir bientôt + en retard
+// A display request, all dimensions composable (any may be null/false):
+//   WHAT (category) × WHEN (scope) × WHO (person) × WHERE (place)
+//   × STATE (status) × URGENT (priority high).
+export type ShowSpec = {
+  scope: Scope;
+  category: string | null;
+  person: string | null;
+  place: string | null;
+  status: TaskStatus | null;
+  urgent: boolean;
+};
 export type DispatchResult = {
   ok: boolean;
   tool: string;
@@ -44,6 +60,8 @@ function toStatus(raw: unknown): TaskStatus | null {
 function toScope(raw: unknown): Scope {
   if (typeof raw !== "string") return "all";
   const s = raw.toLowerCase();
+  if (/(reminder|rappel|à venir|a venir|arrive)/.test(s)) return "reminder";
+  if (/(overdue|retard|dépass|depass|échu|echu)/.test(s)) return "overdue";
   if (/(hour|heure)/.test(s)) return "hours";
   if (/(today|jour|day|aujourd)/.test(s)) return "day";
   if (/(week|semaine)/.test(s)) return "week";
@@ -57,6 +75,8 @@ const SCOPE_LABEL: Record<Scope, string> = {
   day: "les tâches du jour",
   week: "les tâches de la semaine",
   month: "les tâches du mois",
+  overdue: "les tâches en retard",
+  reminder: "le rappel des tâches à venir et en retard",
 };
 
 export async function dispatch(
@@ -92,6 +112,8 @@ export async function dispatch(
         priority: typeof obj.priority === "number" ? obj.priority : null,
         category,
         subcategory,
+        person: normalizeCategory(obj.person),
+        place: normalizeCategory(obj.place),
       });
       const where = [category, subcategory].filter(Boolean).join(" › ");
       out = {
@@ -122,13 +144,22 @@ export async function dispatch(
     case "listAgenda": {
       const scope = toScope(obj.scope ?? obj.range);
       const category = normalizeCategory(obj.category);
+      const person = normalizeCategory(obj.person);
+      const place = normalizeCategory(obj.place);
+      const status = toStatus(obj.status);
+      const urgent = obj.urgent === true;
+      // Spoken confirmation built from the active dimensions.
+      const quals: string[] = [];
+      if (status) quals.push(STATUS_LABEL[status]);
+      if (urgent) quals.push("urgentes");
+      if (category) quals.push(`pour ${category}`);
+      if (person) quals.push(`avec ${person}`);
+      if (place) quals.push(`à ${place}`);
       out = {
         ok: true,
         tool: "showTasks",
-        speech: category
-          ? `Voici ${SCOPE_LABEL[scope]} pour ${category}.`
-          : `Voici ${SCOPE_LABEL[scope]}.`,
-        show: { scope, category },
+        speech: `Voici ${SCOPE_LABEL[scope]}${quals.length ? " " + quals.join(", ") : ""}.`,
+        show: { scope, category, person, place, status, urgent },
       };
       break;
     }
