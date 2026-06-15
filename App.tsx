@@ -389,24 +389,6 @@ export default function App() {
     <View style={styles.screen}>
       <StatusBar style="dark" />
 
-      {/* Top bar: version label (left) + status dot + dev "Tester" chip (right). */}
-      <View style={styles.topBar}>
-        <Text style={styles.versionLabel}>Kairos version 0.3</Text>
-        <View style={styles.topRight}>
-          <Pressable
-            onPress={() => {
-              const phrase = TEST_PHRASES[testIdx % TEST_PHRASES.length];
-              setTestIdx((i) => i + 1);
-              runIntent(phrase);
-            }}
-            style={styles.testChip}
-            hitSlop={8}
-          >
-            <Text style={styles.testChipText}>Tester</Text>
-          </Pressable>
-        </View>
-      </View>
-
       {display === null ? (
         // Home: the logo sits centered and IS the push-to-talk button.
         <View style={styles.homeCenter}>{renderTalk(132)}</View>
@@ -477,11 +459,26 @@ export default function App() {
         </>
       )}
 
-      {/* Interaction journal: single non-scrolling line at the bottom (for
-          retrieving the last event; kept minimal to not pollute the UI). */}
+      {/* Interaction journal: single non-scrolling line (kept minimal). */}
       <Text style={styles.journalLine} numberOfLines={1}>
         {log[0] ?? ""}
       </Text>
+
+      {/* Bottom bar: version label (left) + dev "Tester" chip (right). */}
+      <View style={styles.bottomBar}>
+        <Text style={styles.versionLabel}>Kairos version 0.3</Text>
+        <Pressable
+          onPress={() => {
+            const phrase = TEST_PHRASES[testIdx % TEST_PHRASES.length];
+            setTestIdx((i) => i + 1);
+            runIntent(phrase);
+          }}
+          style={styles.testChip}
+          hitSlop={8}
+        >
+          <Text style={styles.testChipText}>Tester</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -520,16 +517,17 @@ const styles = StyleSheet.create({
     color: "#2f6fed",
     fontVariant: ["tabular-nums"],
   },
-  topBar: {
-    paddingTop: 54,
+  bottomBar: {
     paddingHorizontal: 20,
-    paddingBottom: 4,
+    paddingTop: 8,
+    // Clear the Android navigation bar (48dp inset on this device) since Expo
+    // SDK 56 draws edge-to-edge by default.
+    paddingBottom: 56,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
   versionLabel: { fontSize: 13, fontWeight: "600", color: "#9aa0a6" },
-  topRight: { flexDirection: "row", alignItems: "center", gap: 10 },
   testChip: {
     paddingVertical: 4,
     paddingHorizontal: 10,
@@ -566,7 +564,7 @@ const styles = StyleSheet.create({
   scroll: { flex: 1 },
   container: {
     backgroundColor: "#fbfbfa",
-    paddingTop: 8,
+    paddingTop: 54,
     paddingHorizontal: 20,
     paddingBottom: 24,
   },
