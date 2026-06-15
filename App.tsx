@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
-  ActivityIndicator,
+  Animated,
+  Easing,
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -20,6 +22,9 @@ import { initDb, listTasks, type Task } from "./db";
 // Kairos — STT (FR) + on-device intent parsing with Gemma 4 (E2B) via llama.rn.
 // Voice -> STT -> Gemma 4 (JSON action) -> execute on local SQLite -> TTS.
 const LANG = "fr-FR";
+
+// Clean Kairos chevron (transparent background) — centered on the launch screen.
+const LOGO = require("./assets/android-icon-foreground.png");
 
 type Status = "idle" | "listening" | "speaking";
 type ModelStatus = "unloaded" | "loading" | "ready" | "error";
@@ -109,6 +114,25 @@ export default function App() {
   // (WHAT folder × WHEN temporal scope).
   const [display, setDisplay] = useState<ShowSpec | null>(null);
 
+  // Continuous rotation for the circular loader drawn around the logo on launch.
+  const spinAnim = useRef(new Animated.Value(0)).current;
+  const spin = spinAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ["0deg", "360deg"],
+  });
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.timing(spinAnim, {
+        toValue: 1,
+        duration: 1100,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      }),
+    );
+    if (modelStatus !== "ready") loop.start();
+    return () => loop.stop();
+  }, [modelStatus, spinAnim]);
+
   const refreshTasks = async () => setTasks(await listTasks("open"));
 
   // On launch: open the DB, then auto-load Gemma 4 (with progress) so the model
@@ -166,6 +190,8 @@ export default function App() {
     setModelStatus("loading");
     setLoadPct(0);
     addLog("⏳ chargement Gemma 4 E2B…");
+    // Voice cue: the only thing the app says while the model loads.
+    speak("Patienter pendant le chargement du modèle.");
     try {
       const { ms } = await loadModel((p) => {
         // initLlama reports 0..1 or 0..100 depending on platform — normalize.
@@ -302,6 +328,31 @@ export default function App() {
         ? "#2f6fed"
         : "#9aa0a6";
 
+  // Launch screen: nothing but the centered logo with a circular loader around
+  // it while Gemma loads (and a tap-to-retry affordance if the load failed).
+  if (modelStatus !== "ready") {
+    return (
+      <View style={styles.screen}>
+        <StatusBar style="dark" />
+        <View style={styles.splash}>
+          <View style={styles.ringWrap}>
+            <Animated.View
+              style={[styles.ring, { transform: [{ rotate: spin }] }]}
+            />
+            <Image source={LOGO} style={styles.logo} resizeMode="contain" />
+          </View>
+          {modelStatus === "error" && (
+            <Pressable onPress={loadGemma} style={styles.errorBanner}>
+              <Text style={styles.errorText}>
+                Échec du chargement. Toucher pour réessayer.
+              </Text>
+            </Pressable>
+          )}
+        </View>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.screen}>
       <StatusBar style="dark" />
@@ -327,39 +378,6 @@ export default function App() {
             </Pressable>
           )}
         </View>
-
-        {modelStatus === "loading" && (
-          <View style={styles.loadingBanner}>
-            <View style={styles.loadingRow}>
-              <ActivityIndicator color="#2f6fed" />
-              <Text style={styles.loadingText}>
-                {loadPct >= 100
-                  ? "Préchauffage du modèle…"
-                  : loadPct > 0
-                    ? `Chargement de Gemma 4… ${loadPct}%`
-                    : "Chargement du modèle (≈3 Go)…"}
-              </Text>
-            </View>
-            <View style={styles.progressTrack}>
-              <View
-                style={[
-                  styles.progressFill,
-                  // Show a partial bar during the indeterminate file-load phase
-                  // (initLlama doesn't always report granular progress here).
-                  { width: `${loadPct > 0 ? loadPct : 15}%` },
-                  loadPct === 0 && styles.progressIndeterminate,
-                ]}
-              />
-            </View>
-          </View>
-        )}
-        {modelStatus === "error" && (
-          <Pressable onPress={loadGemma} style={styles.errorBanner}>
-            <Text style={styles.errorText}>
-              Échec du chargement de Gemma 4. Toucher pour réessayer.
-            </Text>
-          </Pressable>
-        )}
 
         {modelStatus === "ready" && (
           <>
@@ -462,6 +480,23 @@ export default function App() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#fbfbfa" },
+  splash: { flex: 1, alignItems: "center", justifyContent: "center", gap: 28 },
+  ringWrap: {
+    width: 176,
+    height: 176,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  ring: {
+    position: "absolute",
+    width: 176,
+    height: 176,
+    borderRadius: 88,
+    borderWidth: 5,
+    borderColor: "#e6eeff",
+    borderTopColor: "#2f6fed",
+  },
+  logo: { width: 104, height: 104 },
   scroll: { flex: 1 },
   container: {
     backgroundColor: "#fbfbfa",
