@@ -167,6 +167,9 @@ export default function App() {
   // bursts while llama loads the ~3 GB model file (RN's own Animated would
   // stutter during those freezes).
   const warmAnnounced = useRef(false);
+  // Launch overdue check fires once, after the model is ready (so the alert
+  // doesn't talk over the loading announcements).
+  const launchAlerted = useRef(false);
 
   // Load every row; displayedTasks decides open-vs-status per the display spec
   // (so an explicit ÉTAT filter like "accomplies" can surface done/archived).
@@ -491,6 +494,39 @@ export default function App() {
   const upcoming = tasks
     .filter((t) => t.status !== "done" && t.status !== "archived")
     .slice(0, 4);
+
+  // Open tasks whose due date has already passed — surfaced at launch.
+  const overdue = tasks.filter((t) => {
+    if (t.status === "done" || t.status === "archived") return false;
+    const ms = parseIso(t.due_iso);
+    return !Number.isNaN(ms) && ms < Date.now();
+  });
+
+  // On launch (once the model is ready), proactively flag overdue tasks: speak a
+  // concise alert and open the "en retard" list so they're immediately
+  // actionable. Runs once per launch; silent when nothing is overdue.
+  useEffect(() => {
+    if (modelStatus !== "ready" || launchAlerted.current) return;
+    launchAlerted.current = true;
+    if (overdue.length === 0) return;
+    const n = overdue.length;
+    const msg =
+      n === 1
+        ? `Attention, une tâche est en retard : ${overdue[0].title}.`
+        : `Attention, vous avez ${n} tâches en retard.`;
+    setDisplay({
+      scope: "overdue",
+      category: null,
+      person: null,
+      place: null,
+      status: null,
+      urgent: false,
+    });
+    setSummary(msg);
+    setSummaryEmoji("⏰");
+    speak(msg);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelStatus, overdue]);
 
   // What's currently on screen, in order, is what gets numbered — and a number
   // is how the user CRUDs on a task ("supprime la 2"). Disambiguation
