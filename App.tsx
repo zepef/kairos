@@ -145,6 +145,14 @@ export default function App() {
   const [lastRevert, setLastRevert] = useState<Revert | null>(null);
   const [candidates, setCandidates] = useState<Task[] | null>(null);
   const [pending, setPending] = useState<PendingAction | null>(null);
+  // Folder labels currently collapsed in the task list (accordion).
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const toggleFolder = (label: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      next.has(label) ? next.delete(label) : next.add(label);
+      return next;
+    });
 
   // The launch loader is the native ActivityIndicator: it's animated by the
   // Android system, so it stays smooth even though the JS thread freezes in
@@ -293,7 +301,7 @@ export default function App() {
     console.log(`[KAIROS] input :: ${text}`);
     // Bridge the wait (on-device inference takes a few seconds) until we can
     // confirm what was understood.
-    speak("Un instant s'il vous plaît.");
+    speak("ok");
     try {
       const r = await parseIntent(text);
       setIntentJson(r.json);
@@ -750,13 +758,24 @@ export default function App() {
                 </Text>
               </View>
             ) : (
-              // Level 1 (folders) over the level-2 (temporal) filtered set.
+              // Level 1 (folders) over the level-2 (temporal) filtered set —
+              // each folder is a collapsible accordion section.
               folders.map((f) => (
                 <View key={f.label} style={styles.folder}>
-                  <Text style={styles.folderTitle}>
-                    {f.label} ({f.count})
-                  </Text>
-                  {f.subs.map((s) => (
+                  <Pressable
+                    style={styles.folderHeader}
+                    onPress={() => toggleFolder(f.label)}
+                    hitSlop={6}
+                  >
+                    <Text style={styles.folderTitle}>
+                      {f.label} ({f.count})
+                    </Text>
+                    <Text style={styles.folderChevron}>
+                      {collapsed.has(f.label) ? "▸" : "▾"}
+                    </Text>
+                  </Pressable>
+                  {!collapsed.has(f.label) &&
+                    f.subs.map((s) => (
                     <View key={s.label || "_"}>
                       {s.label ? (
                         <Text style={styles.subfolderTitle}>{s.label}</Text>
@@ -954,6 +973,12 @@ const styles = StyleSheet.create({
   sectionTitle: { fontSize: 17, fontWeight: "700", color: "#1a1a1a" },
   hideBtn: { fontSize: 14, color: "#9aa0a6", fontWeight: "600" },
   folder: { marginTop: 14 },
+  folderHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  folderChevron: { fontSize: 13, color: "#2f6fed", marginBottom: 6 },
   folderTitle: {
     fontSize: 13,
     fontWeight: "700",
