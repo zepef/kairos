@@ -196,6 +196,10 @@ export default function App() {
       setIntentPerf(`chargé en ${(ms / 1000).toFixed(1)}s`);
       addLog(`✓ Gemma 4 prêt (${(ms / 1000).toFixed(1)}s)`);
       console.log(`[KAIROS] model ready in ${ms}ms`);
+      // PTT now visible: tell the user how to use it (once — loadGemma runs once).
+      speak(
+        "Maintenez le bouton central appuyé pour enregistrer votre commande.",
+      );
     } catch (e: any) {
       setModelStatus("error");
       addLog(`✗ load model: ${e?.message ?? e}`);
@@ -322,31 +326,31 @@ export default function App() {
 
   // The logo doubles as the push-to-talk button once the model is ready: hold
   // to listen. A colored halo appears while listening (green) or speaking (blue).
-  const renderTalk = (size: number) => (
-    <Pressable
-      onPressIn={startListening}
-      onPressOut={stopListening}
-      hitSlop={12}
-      style={({ pressed }) => [styles.talkBtn, pressed && styles.talkPressed]}
-    >
-      {status !== "idle" && (
+  const renderTalk = (size: number) => {
+    const ring = size + 30;
+    return (
+      <Pressable
+        onPressIn={startListening}
+        onPressOut={stopListening}
+        hitSlop={12}
+        style={({ pressed }) => [styles.talkBtn, pressed && styles.talkPressed]}
+      >
+        {/* Circle around the logo: blue by default, green while listening. */}
         <View
           style={[
             styles.talkRing,
-            { width: size + 30, height: size + 30, borderRadius: (size + 30) / 2 },
-            status === "listening"
-              ? styles.talkRingListening
-              : styles.talkRingSpeaking,
+            { width: ring, height: ring, borderRadius: ring / 2 },
+            status === "listening" && styles.talkRingListening,
           ]}
         />
-      )}
-      <Image
-        source={LOGO}
-        style={{ width: size, height: size }}
-        resizeMode="contain"
-      />
-    </Pressable>
-  );
+        <Image
+          source={LOGO}
+          style={{ width: size, height: size }}
+          resizeMode="contain"
+        />
+      </Pressable>
+    );
+  };
 
   // Launch screen: nothing but the centered logo with a circular loader around
   // it while Gemma loads (and a tap-to-retry affordance if the load failed).
@@ -544,9 +548,8 @@ const styles = StyleSheet.create({
   homeCenter: { flex: 1, alignItems: "center", justifyContent: "center" },
   talkBtn: { alignItems: "center", justifyContent: "center" },
   talkPressed: { opacity: 0.85 },
-  talkRing: { position: "absolute", borderWidth: 4, borderColor: "#e6eeff" },
+  talkRing: { position: "absolute", borderWidth: 6, borderColor: "#2f6fed" },
   talkRingListening: { borderColor: "#2e9e5b" },
-  talkRingSpeaking: { borderColor: "#2f6fed" },
   dockTalk: { alignItems: "center", paddingVertical: 6 },
   journalLine: {
     paddingHorizontal: 20,
