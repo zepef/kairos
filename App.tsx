@@ -839,7 +839,7 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: "#fbfbfa" },
+  screen: { flex: 1, backgroundColor: "#edf0f4" },
   splash: { flex: 1, alignItems: "center", justifyContent: "center" },
   // Coordinate frame for the loader; centered on screen. The logo sits at its
   // center, the spinner is nudged down to wrap it, the % sits near the bottom.
@@ -959,7 +959,7 @@ const styles = StyleSheet.create({
   errorText: { fontSize: 14, color: "#c0392b", fontWeight: "600" },
   scroll: { flex: 1 },
   container: {
-    backgroundColor: "#fbfbfa",
+    backgroundColor: "#edf0f4",
     paddingTop: 8,
     paddingHorizontal: 20,
     paddingBottom: 24,
@@ -977,15 +977,18 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    backgroundColor: "#1e3a8a",
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 8,
   },
-  folderChevron: { fontSize: 13, color: "#2f6fed", marginBottom: 6 },
+  folderChevron: { fontSize: 13, color: "#ffffff" },
   folderTitle: {
     fontSize: 13,
     fontWeight: "700",
-    color: "#2f6fed",
+    color: "#ffffff",
     textTransform: "uppercase",
     letterSpacing: 0.5,
-    marginBottom: 6,
   },
   subfolderTitle: {
     fontSize: 12,
@@ -997,10 +1000,10 @@ const styles = StyleSheet.create({
   },
   tasksBox: {
     marginTop: 8,
-    backgroundColor: "#fff",
+    backgroundColor: "#f8fafc",
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: "#eee",
+    borderColor: "#e2e6ec",
     overflow: "hidden",
   },
   taskEmpty: { padding: 16, color: "#999", fontStyle: "italic" },
