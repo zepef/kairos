@@ -68,6 +68,7 @@ Outils disponibles :
 - {"tool":"updateTask","title":<référence>,"changes":{"title?":<string>,"due?":<string>,"dueISO?":<string>,"priority?":<0|1|2|3>,"category?":<string>,"subcategory?":<string>,"person?":<string>,"place?":<string>,"status?":<string>}}  (MODIFIER une tâche existante : ne mets dans "changes" QUE les champs à changer)
 - {"tool":"deleteTask","title":<référence>}  (SUPPRIMER une tâche)
 - {"tool":"undo"}  ("annule", "reviens en arrière" : défaire la dernière action)
+- {"tool":"showCalendar","range":<"day"|"week"|"month"|"year">}  (commande système : ouvrir le CALENDRIER graphique en paysage)
 - {"tool":"unknown"} si rien ne correspond.
 "due" reprend l'expression temporelle telle quelle (ex: "demain 14h").
 "dueISO" = échéance résolue en date ISO 8601 ("2026-06-15T14:00") depuis la DATE ACTUELLE fournie, ou null.
@@ -88,6 +89,7 @@ showTasks : combine librement ces dimensions (toutes facultatives) :
  Ex. "les tâches urgentes en retard pour Paul" -> {"tool":"showTasks","scope":"overdue","category":null,"person":"Paul","place":null,"status":null,"urgent":true}.
 "title" (référence) pour setStatus/updateTask/deleteTask = ce qui désigne la tâche. Les tâches affichées sont NUMÉROTÉES : si l'utilisateur cite un numéro ("supprime la 2", "la tâche 3 est faite", "modifie la 1"), mets ce numéro dans "title" (ex. "2"). Sinon mets les mots-clés du titre.
 updateTask : "reporte X à mardi 15h" -> changes.due/dueISO ; "renomme X en Y" -> changes.title="Y" ; "range X dans Santé" -> changes.category="Santé" ; "mets X urgent" -> changes.priority=3 ; "X c'est avec Paul / au bureau" -> changes.person/place.
+showCalendar : "calendrier quotidien/du jour" -> day ; "calendrier hebdomadaire/de la semaine" -> week ; "calendrier mensuel/du mois" -> month ; "calendrier annuel/de l'année" -> year.
 Réponds en JSON compact.`;
 
 export type IntentResult = {

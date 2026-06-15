@@ -32,6 +32,9 @@ export type ShowSpec = {
   status: TaskStatus | null;
   urgent: boolean;
 };
+// Graphical calendar ranges (landscape views).
+export type CalRange = "day" | "week" | "month" | "year";
+
 // A mutation awaiting which task to act on (set when a reference is ambiguous).
 export type PendingAction =
   | { kind: "update"; changes: Record<string, unknown> }
@@ -47,6 +50,22 @@ export type DispatchResult = {
   revert?: Revert; // how to undo this mutation ("annule")
   candidates?: Task[]; // ambiguous reference: which task did you mean?
   pending?: PendingAction; // the mutation to run once the candidate is chosen
+  calendar?: CalRange; // system command: open a graphical calendar (landscape)
+};
+
+function toCalRange(raw: unknown): CalRange {
+  const s = String(raw ?? "").toLowerCase();
+  if (/(week|hebdo|semaine)/.test(s)) return "week";
+  if (/(month|mensuel|mois)/.test(s)) return "month";
+  if (/(year|annuel|année|annee|\ban\b)/.test(s)) return "year";
+  return "day";
+}
+
+const CAL_LABEL: Record<CalRange, string> = {
+  day: "quotidien",
+  week: "hebdomadaire",
+  month: "mensuel",
+  year: "annuel",
 };
 
 // Pick an emoji that symbolizes the task from its category/title.
@@ -380,6 +399,19 @@ export async function dispatch(
         speech: `Voici ${SCOPE_LABEL[scope]}${quals.length ? " " + quals.join(", ") : ""}.`,
         show: { scope, category, person, place, status, urgent },
         emoji: scope === "overdue" ? "⏰" : scope === "reminder" ? "🔔" : "📋",
+      };
+      break;
+    }
+    // Graphical calendar (landscape): day / week / month / year.
+    case "showCalendar":
+    case "calendar": {
+      const cal = toCalRange(obj.range ?? obj.scope);
+      out = {
+        ok: true,
+        tool: "showCalendar",
+        speech: `Voici le calendrier ${CAL_LABEL[cal]}.`,
+        emoji: "🗓️",
+        calendar: cal,
       };
       break;
     }

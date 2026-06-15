@@ -16,11 +16,14 @@ import {
   useSpeechRecognitionEvent,
 } from "expo-speech-recognition";
 import { isLoaded, loadModel, parseIntent } from "./llm";
+import * as ScreenOrientation from "expo-screen-orientation";
+import CalendarView from "./calendar";
 import {
   dispatch,
   taskEmoji,
   STATUS_EMOJI,
   STATUS_LABEL,
+  type CalRange,
   type PendingAction,
   type Scope,
   type ShowSpec,
@@ -60,7 +63,10 @@ const TEST_PHRASES = [
   "supprime la 1",
   "annule",
   "qu'est-ce qui est en retard",
-  "rappelle-moi ce qui arrive et ce qui est en retard",
+  "affiche le calendrier hebdomadaire",
+  "affiche le calendrier mensuel",
+  "affiche le calendrier annuel",
+  "affiche le calendrier quotidien",
 ];
 
 // Robust ISO parsing: Hermes (RN engine) returns NaN for "2026-06-15T14:00"
@@ -145,6 +151,8 @@ export default function App() {
   const [lastRevert, setLastRevert] = useState<Revert | null>(null);
   const [candidates, setCandidates] = useState<Task[] | null>(null);
   const [pending, setPending] = useState<PendingAction | null>(null);
+  // Graphical calendar overlay (landscape); null = not shown.
+  const [calendar, setCalendar] = useState<CalRange | null>(null);
   // Folder labels currently collapsed in the task list (accordion).
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const toggleFolder = (label: string) =>
@@ -178,6 +186,15 @@ export default function App() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Calendars are landscape; everything else is portrait.
+  useEffect(() => {
+    ScreenOrientation.lockAsync(
+      calendar
+        ? ScreenOrientation.OrientationLock.LANDSCAPE
+        : ScreenOrientation.OrientationLock.PORTRAIT_UP,
+    ).catch(() => {});
+  }, [calendar]);
 
   const addLog = (line: string) =>
     setLog((prev) => [line, ...prev].slice(0, 30));
@@ -330,6 +347,15 @@ export default function App() {
         setDisplay(null);
         setCandidates(res.candidates);
         setPending(res.pending);
+        setSummary(res.speech);
+        setSummaryEmoji(res.emoji);
+        speak(res.speech);
+      } else if (res.calendar) {
+        // System command: open the graphical (landscape) calendar.
+        setCalendar(res.calendar);
+        setDisplay(null);
+        setCandidates(null);
+        setPending(null);
         setSummary(res.speech);
         setSummaryEmoji(res.emoji);
         speak(res.speech);
@@ -644,6 +670,17 @@ export default function App() {
           )}
         </View>
       </View>
+    );
+  }
+
+  // Graphical calendar overlay (landscape) — focused full-screen view.
+  if (calendar) {
+    return (
+      <CalendarView
+        range={calendar}
+        tasks={tasks}
+        onClose={() => setCalendar(null)}
+      />
     );
   }
 
