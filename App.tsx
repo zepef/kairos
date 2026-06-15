@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
-  Animated,
-  Easing,
+  ActivityIndicator,
   Image,
   Pressable,
   ScrollView,
@@ -114,39 +113,10 @@ export default function App() {
   // (WHAT folder × WHEN temporal scope).
   const [display, setDisplay] = useState<ShowSpec | null>(null);
 
-  // Continuous rotation for the circular loader drawn around the logo on launch.
-  // Native-driven + memoized so the animation node is created once and never
-  // re-attached on re-render (loadPct updates would otherwise make it stutter).
-  const spinAnim = useRef(new Animated.Value(0)).current;
-  const spin = useMemo(
-    () =>
-      spinAnim.interpolate({
-        inputRange: [0, 1],
-        outputRange: ["0deg", "360deg"],
-      }),
-    [spinAnim],
-  );
-  // Memoize the WHOLE style (array + transform object), not just the
-  // interpolation: a fresh style reference on every loadPct re-render makes
-  // Android re-attach the native animated node, which stutters the spin during
-  // the 0→100% phase. A stable reference keeps the node attached once.
-  const ringStyle = useMemo(
-    () => [styles.ring, { transform: [{ rotate: spin }] }],
-    [spin],
-  );
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.timing(spinAnim, {
-        toValue: 1,
-        duration: 1100,
-        easing: Easing.linear,
-        useNativeDriver: true,
-      }),
-    );
-    if (modelStatus !== "ready") loop.start();
-    return () => loop.stop();
-  }, [modelStatus, spinAnim]);
-
+  // The launch loader is the native ActivityIndicator: it's animated by the
+  // Android system, so it stays smooth even though the JS thread freezes in
+  // bursts while llama loads the ~3 GB model file (RN's own Animated would
+  // stutter during those freezes).
   const warmAnnounced = useRef(false);
 
   const refreshTasks = async () => setTasks(await listTasks("open"));
@@ -350,6 +320,34 @@ export default function App() {
         ? "#2f6fed"
         : "#9aa0a6";
 
+  // The logo doubles as the push-to-talk button once the model is ready: hold
+  // to listen. A colored halo appears while listening (green) or speaking (blue).
+  const renderTalk = (size: number) => (
+    <Pressable
+      onPressIn={startListening}
+      onPressOut={stopListening}
+      hitSlop={12}
+      style={({ pressed }) => [styles.talkBtn, pressed && styles.talkPressed]}
+    >
+      {status !== "idle" && (
+        <View
+          style={[
+            styles.talkRing,
+            { width: size + 30, height: size + 30, borderRadius: (size + 30) / 2 },
+            status === "listening"
+              ? styles.talkRingListening
+              : styles.talkRingSpeaking,
+          ]}
+        />
+      )}
+      <Image
+        source={LOGO}
+        style={{ width: size, height: size }}
+        resizeMode="contain"
+      />
+    </Pressable>
+  );
+
   // Launch screen: nothing but the centered logo with a circular loader around
   // it while Gemma loads (and a tap-to-retry affordance if the load failed).
   if (modelStatus !== "ready") {
@@ -358,13 +356,25 @@ export default function App() {
         <StatusBar style="dark" />
         <View style={styles.splash}>
           <View style={styles.ringWrap}>
-            <Animated.View style={ringStyle} />
-            <View style={styles.ringInner}>
-              <Image source={LOGO} style={styles.logo} resizeMode="contain" />
-              {modelStatus !== "error" && (
-                <Text style={styles.loadPct}>{loadPct}%</Text>
-              )}
+            {/* The native spinner draws its arc in the TOP of its own box, so
+                centering the view leaves the circle above the logo. Nudge the
+                spinner down so the circle's center lands on the logo. */}
+            <View style={styles.spinnerWrap}>
+              <ActivityIndicator
+                size="large"
+                color="#2f6fed"
+                style={styles.loaderSpin}
+              />
             </View>
+            <View style={styles.loaderWrap}>
+              <Image source={LOGO} style={styles.logo} resizeMode="contain" />
+            </View>
+            {/* Percentage just below the circle. */}
+            {modelStatus !== "error" && (
+              <View style={styles.pctWrap}>
+                <Text style={styles.loadPct}>{loadPct}%</Text>
+              </View>
+            )}
           </View>
           {modelStatus === "error" && (
             <Pressable onPress={loadGemma} style={styles.errorBanner}>
@@ -381,41 +391,34 @@ export default function App() {
   return (
     <View style={styles.screen}>
       <StatusBar style="dark" />
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={styles.container}
-        keyboardShouldPersistTaps="handled"
-      >
-        <View style={styles.titleRow}>
-          <Text style={styles.title}>Kairos</Text>
-          <View style={[styles.dot, { backgroundColor: dotColor }]} />
-          {modelStatus === "ready" && (
-            <Pressable
-              onPress={() => {
-                const phrase = TEST_PHRASES[testIdx % TEST_PHRASES.length];
-                setTestIdx((i) => i + 1);
-                runIntent(phrase);
-              }}
-              style={styles.testChip}
-              hitSlop={8}
-            >
-              <Text style={styles.testChipText}>Tester</Text>
-            </Pressable>
-          )}
-        </View>
 
-        {modelStatus === "ready" && (
-          <>
-        {display === null ? (
-          processing ? (
-            <Text style={styles.homeHint}>traitement…</Text>
-          ) : (
-            <Text style={styles.homeHint}>
-              Dis « affiche les tâches du jour », « ajoute… », « marque… ».
-            </Text>
-          )
-        ) : (
-          <>
+      {/* Minimal top bar: status dot + dev "Tester" chip. */}
+      <View style={styles.topBar}>
+        <View style={[styles.dot, { backgroundColor: dotColor }]} />
+        <Pressable
+          onPress={() => {
+            const phrase = TEST_PHRASES[testIdx % TEST_PHRASES.length];
+            setTestIdx((i) => i + 1);
+            runIntent(phrase);
+          }}
+          style={styles.testChip}
+          hitSlop={8}
+        >
+          <Text style={styles.testChipText}>Tester</Text>
+        </Pressable>
+      </View>
+
+      {display === null ? (
+        // Home: the logo sits centered and IS the push-to-talk button.
+        <View style={styles.homeCenter}>{renderTalk(132)}</View>
+      ) : (
+        // A system command showed tasks: list them, keep talk available below.
+        <>
+          <ScrollView
+            style={styles.scroll}
+            contentContainerStyle={styles.container}
+            keyboardShouldPersistTaps="handled"
+          >
             <View style={styles.tasksHeaderRow}>
               <Text style={styles.sectionTitle}>
                 {display.category
@@ -470,78 +473,65 @@ export default function App() {
                 </View>
               ))
             )}
-          </>
-        )}
+          </ScrollView>
+          <View style={styles.dockTalk}>{renderTalk(54)}</View>
+        </>
+      )}
 
-          </>
-        )}
-      </ScrollView>
       {/* Interaction journal: single non-scrolling line at the bottom (for
           retrieving the last event; kept minimal to not pollute the UI). */}
       <Text style={styles.journalLine} numberOfLines={1}>
         {log[0] ?? ""}
       </Text>
-
-      {/* Push-to-talk FAB, bottom-right (hold to speak). */}
-      {modelStatus === "ready" && (
-        <Pressable
-          onPressIn={startListening}
-          onPressOut={stopListening}
-          hitSlop={10}
-          style={({ pressed }) => [
-            styles.fab,
-            status === "listening" && styles.fabActive,
-            pressed && styles.fabPressed,
-          ]}
-        >
-          <View style={styles.micBody} />
-          <View style={styles.micStem} />
-          <View style={styles.micBase} />
-        </Pressable>
-      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#fbfbfa" },
-  splash: { flex: 1, alignItems: "center", justifyContent: "center", gap: 28 },
-  ringWrap: {
-    width: 176,
-    height: 176,
+  splash: { flex: 1, alignItems: "center", justifyContent: "center" },
+  // Coordinate frame for the loader; centered on screen. The logo sits at its
+  // center, the spinner is nudged down to wrap it, the % sits near the bottom.
+  ringWrap: { width: 240, height: 240 },
+  loaderWrap: {
+    ...StyleSheet.absoluteFillObject,
     alignItems: "center",
     justifyContent: "center",
   },
-  ring: {
-    position: "absolute",
-    width: 176,
-    height: 176,
-    borderRadius: 88,
-    borderWidth: 5,
-    borderColor: "#e6eeff",
-    borderTopColor: "#2f6fed",
+  // Same as loaderWrap but pushed down ~57dp: the native spinner draws its arc
+  // that far above its view center, so this re-centers the circle on the logo.
+  spinnerWrap: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    transform: [{ translateY: 65 }],
   },
-  ringInner: { alignItems: "center", justifyContent: "center" },
-  logo: { width: 88, height: 88 },
+  loaderSpin: { transform: [{ scale: 3 }] },
+  logo: { width: 96, height: 96 },
+  // Centered like the logo, then pushed down to sit just below the circle.
+  pctWrap: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    transform: [{ translateY: 10 }],
+  },
   loadPct: {
-    marginTop: 2,
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: "700",
     color: "#2f6fed",
     fontVariant: ["tabular-nums"],
   },
-  scroll: { flex: 1 },
-  container: {
-    backgroundColor: "#fbfbfa",
-    paddingTop: 60,
+  topBar: {
+    paddingTop: 54,
     paddingHorizontal: 20,
-    paddingBottom: 48,
+    paddingBottom: 4,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: 10,
   },
-  titleRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  title: { fontSize: 28, fontWeight: "800", color: "#1a1a1a" },
   dot: { width: 12, height: 12, borderRadius: 6 },
   testChip: {
-    marginLeft: "auto",
     paddingVertical: 4,
     paddingHorizontal: 10,
     borderRadius: 999,
@@ -550,6 +540,14 @@ const styles = StyleSheet.create({
     backgroundColor: "#eef3ff",
   },
   testChipText: { fontSize: 11, color: "#2f6fed", fontWeight: "600" },
+  // The logo IS the push-to-talk button; a halo appears while listening/speaking.
+  homeCenter: { flex: 1, alignItems: "center", justifyContent: "center" },
+  talkBtn: { alignItems: "center", justifyContent: "center" },
+  talkPressed: { opacity: 0.85 },
+  talkRing: { position: "absolute", borderWidth: 4, borderColor: "#e6eeff" },
+  talkRingListening: { borderColor: "#2e9e5b" },
+  talkRingSpeaking: { borderColor: "#2f6fed" },
+  dockTalk: { alignItems: "center", paddingVertical: 6 },
   journalLine: {
     paddingHorizontal: 20,
     paddingVertical: 6,
@@ -558,52 +556,6 @@ const styles = StyleSheet.create({
     fontFamily: "monospace",
     backgroundColor: "#f1f3f6",
   },
-  fab: {
-    position: "absolute",
-    right: 22,
-    bottom: 48,
-    width: 64,
-    height: 64,
-    borderRadius: 18,
-    backgroundColor: "#2f6fed",
-    alignItems: "center",
-    justifyContent: "center",
-    elevation: 6,
-    shadowColor: "#000",
-    shadowOpacity: 0.25,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 3 },
-  },
-  fabActive: { backgroundColor: "#2e9e5b" },
-  fabPressed: { opacity: 0.9 },
-  micBody: { width: 15, height: 23, borderRadius: 7.5, backgroundColor: "#fff" },
-  micStem: { width: 2, height: 5, backgroundColor: "#fff", marginTop: 2 },
-  micBase: {
-    width: 17,
-    height: 2,
-    borderRadius: 1,
-    backgroundColor: "#fff",
-    marginTop: 1,
-  },
-  loadingBanner: {
-    marginTop: 16,
-    padding: 14,
-    borderRadius: 12,
-    backgroundColor: "#eef3ff",
-    borderWidth: 1,
-    borderColor: "#cfe0ff",
-    gap: 10,
-  },
-  loadingRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  loadingText: { fontSize: 15, color: "#2f6fed", fontWeight: "600" },
-  progressTrack: {
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: "#d7e3ff",
-    overflow: "hidden",
-  },
-  progressFill: { height: 8, borderRadius: 4, backgroundColor: "#2f6fed" },
-  progressIndeterminate: { backgroundColor: "#9bbcff" },
   errorBanner: {
     marginTop: 16,
     padding: 14,
@@ -613,34 +565,13 @@ const styles = StyleSheet.create({
     borderColor: "#f5c2c2",
   },
   errorText: { fontSize: 14, color: "#c0392b", fontWeight: "600" },
-  toggleLabel: { fontSize: 15, color: "#333" },
-  label: {
-    marginTop: 10,
-    fontSize: 12,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-    color: "#999",
+  scroll: { flex: 1 },
+  container: {
+    backgroundColor: "#fbfbfa",
+    paddingTop: 8,
+    paddingHorizontal: 20,
+    paddingBottom: 24,
   },
-  talkBtn: {
-    marginTop: 24,
-    backgroundColor: "#2f6fed",
-    paddingVertical: 22,
-    borderRadius: 16,
-    alignItems: "center",
-  },
-  talkBtnActive: { backgroundColor: "#2e9e5b" },
-  talkBtnPressed: { opacity: 0.85 },
-  talkBtnText: { color: "#fff", fontSize: 18, fontWeight: "700" },
-  ttsBtn: {
-    marginTop: 12,
-    paddingVertical: 14,
-    borderRadius: 12,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#2f6fed",
-  },
-  ttsBtnText: { color: "#2f6fed", fontSize: 15, fontWeight: "600" },
-  btnDisabled: { opacity: 0.4 },
   tasksHeaderRow: {
     marginTop: 22,
     flexDirection: "row",
@@ -648,14 +579,6 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   sectionTitle: { fontSize: 17, fontWeight: "700", color: "#1a1a1a" },
-  processing: { fontSize: 13, color: "#b8860b", fontWeight: "600" },
-  homeHint: {
-    marginTop: 28,
-    fontSize: 15,
-    color: "#9aa0a6",
-    fontStyle: "italic",
-    textAlign: "center",
-  },
   hideBtn: { fontSize: 14, color: "#9aa0a6", fontWeight: "600" },
   folder: { marginTop: 14 },
   folderTitle: {
@@ -674,22 +597,6 @@ const styles = StyleSheet.create({
     marginTop: 8,
     marginBottom: 4,
   },
-  viewBar: {
-    flexDirection: "row",
-    marginTop: 18,
-    backgroundColor: "#eef1f6",
-    borderRadius: 10,
-    padding: 3,
-  },
-  viewBtn: {
-    flex: 1,
-    paddingVertical: 8,
-    borderRadius: 8,
-    alignItems: "center",
-  },
-  viewBtnActive: { backgroundColor: "#fff" },
-  viewBtnText: { fontSize: 13, color: "#7a869a", fontWeight: "600" },
-  viewBtnTextActive: { color: "#2f6fed" },
   tasksBox: {
     marginTop: 8,
     backgroundColor: "#fff",
@@ -710,40 +617,4 @@ const styles = StyleSheet.create({
   },
   taskTitle: { fontSize: 16, color: "#1a1a1a", flexShrink: 1 },
   taskDue: { fontSize: 13, color: "#2f6fed", marginLeft: 10 },
-  gemmaBox: {
-    marginTop: 16,
-    padding: 12,
-    borderRadius: 12,
-    backgroundColor: "#fff",
-    borderWidth: 1,
-    borderColor: "#e3e8f0",
-    gap: 8,
-  },
-  gemmaHeaderRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  gemmaStatus: { fontSize: 14, color: "#2f6fed", fontWeight: "600" },
-  intentJson: {
-    fontFamily: "monospace",
-    fontSize: 13,
-    color: "#0d1117",
-    backgroundColor: "#f3f5f9",
-    borderRadius: 8,
-    padding: 8,
-  },
-  gemmaPerf: { fontSize: 12, color: "#2e9e5b", fontWeight: "600" },
-  logBox: {
-    marginTop: 6,
-    backgroundColor: "#0d1117",
-    borderRadius: 10,
-    padding: 10,
-  },
-  logLine: {
-    color: "#9ece6a",
-    fontFamily: "monospace",
-    fontSize: 12,
-    marginBottom: 2,
-  },
 });
