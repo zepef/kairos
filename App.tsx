@@ -126,6 +126,14 @@ export default function App() {
       }),
     [spinAnim],
   );
+  // Memoize the WHOLE style (array + transform object), not just the
+  // interpolation: a fresh style reference on every loadPct re-render makes
+  // Android re-attach the native animated node, which stutters the spin during
+  // the 0→100% phase. A stable reference keeps the node attached once.
+  const ringStyle = useMemo(
+    () => [styles.ring, { transform: [{ rotate: spin }] }],
+    [spin],
+  );
   useEffect(() => {
     const loop = Animated.loop(
       Animated.timing(spinAnim, {
@@ -350,9 +358,7 @@ export default function App() {
         <StatusBar style="dark" />
         <View style={styles.splash}>
           <View style={styles.ringWrap}>
-            <Animated.View
-              style={[styles.ring, { transform: [{ rotate: spin }] }]}
-            />
+            <Animated.View style={ringStyle} />
             <View style={styles.ringInner}>
               <Image source={LOGO} style={styles.logo} resizeMode="contain" />
               {modelStatus !== "error" && (
