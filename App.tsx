@@ -16,7 +16,7 @@ import {
   useSpeechRecognitionEvent,
 } from "expo-speech-recognition";
 import { isLoaded, loadModel, parseIntent } from "./llm";
-import { dispatch, type Scope, type ShowSpec } from "./intent";
+import { dispatch, taskEmoji, type Scope, type ShowSpec } from "./intent";
 import { initDb, listTasks, type Task } from "./db";
 
 // Kairos — STT (FR) + on-device intent parsing with Gemma 4 (E2B) via llama.rn.
@@ -120,6 +120,11 @@ export default function App() {
   // (WHAT folder × WHEN temporal scope).
   const [display, setDisplay] = useState<ShowSpec | null>(null);
   const [ttsOn, setTtsOn] = useState(true);
+  // Top summary panel: what we heard + the understood intent (visual echo of
+  // the TTS confirmation, so the user sees we got their intent right).
+  const [heard, setHeard] = useState("");
+  const [summary, setSummary] = useState("");
+  const [summaryEmoji, setSummaryEmoji] = useState("");
 
   // The launch loader is the native ActivityIndicator: it's animated by the
   // Android system, so it stays smooth even though the JS thread freezes in
@@ -222,6 +227,9 @@ export default function App() {
     setIntentJson("…");
     setIntentPerf("inférence…");
     setProcessing(true);
+    setHeard(text); // echo what was heard in the top panel
+    setSummary("");
+    setSummaryEmoji("");
     console.log(`[KAIROS] input :: ${text}`);
     // Bridge the wait (on-device inference takes a few seconds) until we can
     // confirm what was understood.
@@ -238,11 +246,15 @@ export default function App() {
       const res = await dispatch(r.json, text);
       if (res.show) setDisplay(res.show); // system command: show the task list
       await refreshTasks();
+      setSummary(res.speech); // understood-intent summary for the top panel
+      setSummaryEmoji(res.emoji); // symbol of the recognized task
       addLog(`${res.ok ? "✓" : "✗"} ${res.tool}: ${res.speech}`);
       console.log(`[KAIROS] action ${res.tool} ok=${res.ok} :: ${res.speech}`);
       speak(res.speech);
     } catch (e: any) {
       setIntentJson("");
+      setSummary("Je n'ai pas compris.");
+      setSummaryEmoji("❓");
       addLog(`✗ intent: ${e?.message ?? e}`);
       console.log(`[KAIROS] intent error: ${e?.message ?? e}`);
     } finally {
@@ -351,6 +363,12 @@ export default function App() {
   })();
 
   const folders = buildFolders(displayedTasks);
+
+  // Mini agenda peek shown under the PTT button: the few soonest open tasks
+  // (tasks is already sorted by due date). Grows as the user adds/updates tasks.
+  const upcoming = tasks
+    .filter((t) => t.status !== "done" && t.status !== "archived")
+    .slice(0, 4);
 
   const SCOPE_TITLE: Record<Scope, string> = {
     all: "Toutes les tâches",
@@ -463,9 +481,49 @@ export default function App() {
     <View style={styles.screen}>
       <StatusBar style="dark" />
 
+      {/* Top summary panel: visual echo that we understood the intent. */}
+      {(processing || summary) && (
+        <View style={styles.topNote}>
+          {heard ? (
+            <Text style={styles.topNoteHeard} numberOfLines={1}>
+              « {heard} »
+            </Text>
+          ) : null}
+          <View style={styles.topNoteRow}>
+            {!processing && summaryEmoji ? (
+              <Text style={styles.topNoteEmoji}>{summaryEmoji}</Text>
+            ) : null}
+            <Text style={styles.topNoteSummary} numberOfLines={2}>
+              {processing ? "Compréhension en cours…" : summary}
+            </Text>
+          </View>
+        </View>
+      )}
+
       {display === null ? (
-        // Home: the logo sits centered and IS the push-to-talk button.
-        <View style={styles.homeCenter}>{renderTalk(LOGO_SIZE)}</View>
+        // Home: the logo is the push-to-talk button, with a live mini agenda
+        // of upcoming tasks below it (fed as the user issues commands).
+        <View style={styles.homeCenter}>
+          {renderTalk(LOGO_SIZE)}
+          {upcoming.length > 0 && (
+            <View style={styles.miniPlan}>
+              <Text style={styles.miniHeader}>À venir</Text>
+              {upcoming.map((t) => (
+                <View key={t.id} style={styles.miniRow}>
+                  <Text style={styles.miniEmoji}>
+                    {taskEmoji(t.category, t.title)}
+                  </Text>
+                  <Text style={styles.miniTitle} numberOfLines={1}>
+                    {t.title}
+                  </Text>
+                  <Text style={styles.miniDue}>
+                    {t.due_iso ? fmtWhen(t.due_iso) : (t.due ?? "")}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          )}
+        </View>
       ) : (
         // A system command showed tasks: list them, keep talk available below.
         <>
@@ -615,7 +673,45 @@ const styles = StyleSheet.create({
   },
   testChipText: { fontSize: 11, color: "#2f6fed", fontWeight: "600" },
   // The logo IS the push-to-talk button; a halo appears while listening/speaking.
+  topNote: {
+    marginTop: 50,
+    marginHorizontal: 16,
+    padding: 12,
+    borderRadius: 14,
+    backgroundColor: "#eef3ff",
+    borderWidth: 1,
+    borderColor: "#cfe0ff",
+  },
+  topNoteHeard: {
+    fontSize: 12,
+    color: "#7a869a",
+    fontStyle: "italic",
+    marginBottom: 3,
+  },
+  topNoteRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  topNoteEmoji: { fontSize: 22 },
+  topNoteSummary: { flex: 1, fontSize: 14, fontWeight: "600", color: "#1a1a1a" },
   homeCenter: { flex: 1, alignItems: "center", justifyContent: "center" },
+  miniPlan: { width: "88%", marginTop: 28 },
+  miniHeader: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#9aa0a6",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginBottom: 6,
+  },
+  miniRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#e8e8e8",
+  },
+  miniEmoji: { fontSize: 18 },
+  miniTitle: { flex: 1, fontSize: 14, color: "#1a1a1a" },
+  miniDue: { fontSize: 12, color: "#2f6fed" },
   talkBtn: { alignItems: "center", justifyContent: "center" },
   talkPressed: { opacity: 0.85 },
   talkRing: { position: "absolute", borderWidth: 6, borderColor: "#2f6fed" },
@@ -633,7 +729,7 @@ const styles = StyleSheet.create({
   scroll: { flex: 1 },
   container: {
     backgroundColor: "#fbfbfa",
-    paddingTop: 54,
+    paddingTop: 8,
     paddingHorizontal: 20,
     paddingBottom: 24,
   },

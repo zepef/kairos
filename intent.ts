@@ -27,6 +27,30 @@ export type DispatchResult = {
   tool: string;
   speech: string; // what the TTS says back
   show?: ShowSpec; // system command: display the task list
+  emoji: string; // symbol of the understood intent, shown in the top panel
+};
+
+// Pick an emoji that symbolizes the task from its category/title.
+export function taskEmoji(category: string | null, title: string): string {
+  const hay = `${category ?? ""} ${title ?? ""}`.toLowerCase();
+  if (/(santé|sante|médec|medec|dentiste|docteur|pharmac|hôpital|hopital|rdv médical)/.test(hay)) return "🏥";
+  if (/(course|achat|acheter|pain|supermarch|magasin|épicerie|epicerie)/.test(hay)) return "🛒";
+  if (/(appel|appeler|téléphon|telephon|rappeler)/.test(hay)) return "📞";
+  if (/(mail|e-mail|email|courriel|écrire|ecrire|envoyer un message)/.test(hay)) return "✉️";
+  if (/(rendez-vous|rdv|réunion|reunion|meeting)/.test(hay)) return "📅";
+  if (/(finance|banque|payer|paiement|facture|impôt|impot|virement)/.test(hay)) return "💰";
+  if (/(famille|maman|papa|enfant|école|ecole|anniversaire)/.test(hay)) return "👪";
+  if (/(voyage|train|avion|billet|vol|hôtel|hotel)/.test(hay)) return "✈️";
+  if (/(travail|projet|bureau|client|réunion|dossier)/.test(hay)) return "💼";
+  return "📝";
+}
+
+const STATUS_EMOJI: Record<TaskStatus, string> = {
+  todo: "↩️",
+  pending: "⏳",
+  done: "✅",
+  postponed: "🔁",
+  archived: "🗄️",
 };
 
 function normalizeCategory(raw: unknown): string | null {
@@ -93,14 +117,24 @@ export async function dispatch(
       paramsJson: jsonStr,
       result: "error",
     });
-    return { ok: false, tool: "parse_error", speech: "Je n'ai pas bien compris." };
+    return {
+      ok: false,
+      tool: "parse_error",
+      speech: "Je n'ai pas bien compris.",
+      emoji: "❓",
+    };
   }
 
   let out: DispatchResult;
   switch (obj.tool) {
     case "createTask": {
       if (!obj.title) {
-        out = { ok: false, tool: obj.tool, speech: "Quelle tâche dois-je ajouter ?" };
+        out = {
+          ok: false,
+          tool: obj.tool,
+          speech: "Quelle tâche dois-je ajouter ?",
+          emoji: "❓",
+        };
         break;
       }
       const category = normalizeCategory(obj.category);
@@ -120,6 +154,7 @@ export async function dispatch(
         ok: true,
         tool: "createTask",
         speech: `Tâche ajoutée${where ? ` dans ${where}` : ""} : ${obj.title}${obj.due ? `, ${obj.due}` : ""}.`,
+        emoji: taskEmoji(category, obj.title),
       };
       break;
     }
@@ -134,8 +169,14 @@ export async function dispatch(
             ok: true,
             tool: "setStatus",
             speech: `${t.title} : ${STATUS_LABEL[status]}.`,
+            emoji: STATUS_EMOJI[status],
           }
-        : { ok: false, tool: "setStatus", speech: "Je n'ai pas trouvé cette tâche." };
+        : {
+            ok: false,
+            tool: "setStatus",
+            speech: "Je n'ai pas trouvé cette tâche.",
+            emoji: "❓",
+          };
       break;
     }
     // System / view commands: the only way to put the task list on screen.
@@ -160,6 +201,7 @@ export async function dispatch(
         tool: "showTasks",
         speech: `Voici ${SCOPE_LABEL[scope]}${quals.length ? " " + quals.join(", ") : ""}.`,
         show: { scope, category, person, place, status, urgent },
+        emoji: scope === "overdue" ? "⏰" : scope === "reminder" ? "🔔" : "📋",
       };
       break;
     }
@@ -168,6 +210,7 @@ export async function dispatch(
         ok: false,
         tool: obj.tool ?? "unknown",
         speech: "Je n'ai pas compris la demande.",
+        emoji: "❓",
       };
   }
 
