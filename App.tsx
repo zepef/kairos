@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
   Easing,
@@ -115,11 +115,17 @@ export default function App() {
   const [display, setDisplay] = useState<ShowSpec | null>(null);
 
   // Continuous rotation for the circular loader drawn around the logo on launch.
+  // Native-driven + memoized so the animation node is created once and never
+  // re-attached on re-render (loadPct updates would otherwise make it stutter).
   const spinAnim = useRef(new Animated.Value(0)).current;
-  const spin = spinAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: ["0deg", "360deg"],
-  });
+  const spin = useMemo(
+    () =>
+      spinAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: ["0deg", "360deg"],
+      }),
+    [spinAnim],
+  );
   useEffect(() => {
     const loop = Animated.loop(
       Animated.timing(spinAnim, {
@@ -132,6 +138,8 @@ export default function App() {
     if (modelStatus !== "ready") loop.start();
     return () => loop.stop();
   }, [modelStatus, spinAnim]);
+
+  const warmAnnounced = useRef(false);
 
   const refreshTasks = async () => setTasks(await listTasks("open"));
 
@@ -189,8 +197,9 @@ export default function App() {
     if (modelStatus === "loading" || modelStatus === "ready") return;
     setModelStatus("loading");
     setLoadPct(0);
+    warmAnnounced.current = false;
     addLog("⏳ chargement Gemma 4 E2B…");
-    // Voice cue: the only thing the app says while the model loads.
+    // Voice cue: the only thing the app says while the model file loads.
     speak("Patienter pendant le chargement du modèle.");
     try {
       const { ms } = await loadModel((p) => {
@@ -198,6 +207,11 @@ export default function App() {
         const pct = Math.max(0, Math.min(100, Math.round(p <= 1 ? p * 100 : p)));
         console.log(`[KAIROS] load progress ${pct}%`);
         setLoadPct(pct);
+        // File done -> warm-up begins; announce it once.
+        if (pct >= 100 && !warmAnnounced.current) {
+          warmAnnounced.current = true;
+          speak("Préchauffage du système.");
+        }
       });
       setLoadPct(100);
       setModelStatus("ready");
@@ -339,7 +353,12 @@ export default function App() {
             <Animated.View
               style={[styles.ring, { transform: [{ rotate: spin }] }]}
             />
-            <Image source={LOGO} style={styles.logo} resizeMode="contain" />
+            <View style={styles.ringInner}>
+              <Image source={LOGO} style={styles.logo} resizeMode="contain" />
+              {modelStatus !== "error" && (
+                <Text style={styles.loadPct}>{loadPct}%</Text>
+              )}
+            </View>
           </View>
           {modelStatus === "error" && (
             <Pressable onPress={loadGemma} style={styles.errorBanner}>
@@ -496,7 +515,15 @@ const styles = StyleSheet.create({
     borderColor: "#e6eeff",
     borderTopColor: "#2f6fed",
   },
-  logo: { width: 104, height: 104 },
+  ringInner: { alignItems: "center", justifyContent: "center" },
+  logo: { width: 88, height: 88 },
+  loadPct: {
+    marginTop: 2,
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#2f6fed",
+    fontVariant: ["tabular-nums"],
+  },
   scroll: { flex: 1 },
   container: {
     backgroundColor: "#fbfbfa",
