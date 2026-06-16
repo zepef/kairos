@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { type ReactNode } from "react";
 import {
   Pressable,
   ScrollView,
@@ -91,32 +91,50 @@ function Chip({ t }: { t: Task }) {
 
 type Dated = { t: Task; ms: number };
 
-// A position in the calendar: which graphical range, anchored on which date.
-type Nav = { range: CalRange; anchor: Date };
+// The four zoom levels, narrowest → widest. Zooming "in" goes left (more
+// detail: year→month→week→day), "out" goes right (wider: day→week→month→year).
+const LEVELS: CalRange[] = ["day", "week", "month", "year"];
+const LEVEL_LABEL: Record<CalRange, string> = {
+  day: "Jour",
+  week: "Semaine",
+  month: "Mois",
+  year: "Année",
+};
+const widerOf = (r: CalRange): CalRange =>
+  LEVELS[Math.min(LEVELS.length - 1, LEVELS.indexOf(r) + 1)];
+const narrowerOf = (r: CalRange): CalRange =>
+  LEVELS[Math.max(0, LEVELS.indexOf(r) - 1)];
 
+// Controlled view: the current zoom level (range) and the date it is anchored
+// on both live in App (single source of truth), so zoom works identically from
+// touch (the header ± buttons and tap-to-drill) and from voice (zoomCalendar /
+// showCalendar). onNavigate reports the requested (range, anchor); renderTalk
+// injects App's push-to-talk control so voice commands work while the calendar
+// is full-screen.
 export default function CalendarView({
   range,
+  anchor,
   tasks,
+  onNavigate,
   onClose,
+  renderTalk,
 }: {
   range: CalRange;
+  anchor: Date;
   tasks: Task[];
+  onNavigate: (range: CalRange, anchor: Date) => void;
   onClose: () => void;
+  renderTalk?: (size: number) => ReactNode;
 }) {
   const { width, height } = useWindowDimensions();
   const now = new Date();
-  // Navigation stack: the year view drills into month/day; "‹ Retour" pops back.
-  const [stack, setStack] = useState<Nav[]>([{ range, anchor: now }]);
-  const cur = stack[stack.length - 1];
-  const push = (n: Nav) => setStack((s) => [...s, n]);
-  const pop = () => setStack((s) => (s.length > 1 ? s.slice(0, -1) : s));
 
   const dated = tasks
     .filter(open)
     .map((t) => ({ t, ms: parseIso(t.due_iso) }))
     .filter((x) => !Number.isNaN(x.ms));
 
-  const a = cur.anchor;
+  const a = anchor;
   const weekStart = (() => {
     const s = new Date(a.getFullYear(), a.getMonth(), a.getDate());
     s.setDate(s.getDate() - wd(s));
@@ -133,44 +151,66 @@ export default function CalendarView({
     <View style={styles.root}>
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          {stack.length > 1 && (
-            <Pressable onPress={pop} hitSlop={12}>
-              <Text style={styles.back}>‹ Retour</Text>
+          {/* Zoom out: widen the window (day→week→month→year), same anchor. */}
+          {range !== "year" && (
+            <Pressable
+              onPress={() => onNavigate(widerOf(range), a)}
+              hitSlop={12}
+              style={styles.zoomBtn}
+            >
+              <Text style={styles.zoomLabel}>－ {LEVEL_LABEL[widerOf(range)]}</Text>
             </Pressable>
           )}
-          <Text style={styles.title}>🗓️ {titles[cur.range]}</Text>
+          <Text style={styles.title}>🗓️ {titles[range]}</Text>
+          {/* Zoom in: more detail (year→month→week→day), same anchor. */}
+          {range !== "day" && (
+            <Pressable
+              onPress={() => onNavigate(narrowerOf(range), a)}
+              hitSlop={12}
+              style={styles.zoomBtn}
+            >
+              <Text style={styles.zoomLabel}>{LEVEL_LABEL[narrowerOf(range)]} ＋</Text>
+            </Pressable>
+          )}
         </View>
         <Pressable onPress={onClose} hitSlop={12}>
           <Text style={styles.close}>✕ Fermer</Text>
         </Pressable>
       </View>
-      {cur.range === "day" && <DayView day={a} now={now} dated={dated} />}
-      {cur.range === "week" && (
+      {range === "day" && <DayView day={a} now={now} dated={dated} />}
+      {range === "week" && (
         <WeekView
           start={weekStart}
           now={now}
           dated={dated}
-          onPickDay={(d) => push({ range: "day", anchor: d })}
+          onPickDay={(d) => onNavigate("day", d)}
         />
       )}
-      {cur.range === "month" && (
+      {range === "month" && (
         <MonthView
           month={a}
           now={now}
           dated={dated}
           w={width}
-          onPickDay={(d) => push({ range: "day", anchor: d })}
+          onPickDay={(d) => onNavigate("day", d)}
         />
       )}
-      {cur.range === "year" && (
+      {range === "year" && (
         <YearView
           year={a.getFullYear()}
           now={now}
           dated={dated}
           h={height}
-          onPickMonth={(d) => push({ range: "month", anchor: d })}
-          onPickDay={(d) => push({ range: "day", anchor: d })}
+          onPickMonth={(d) => onNavigate("month", d)}
+          onPickDay={(d) => onNavigate("day", d)}
         />
+      )}
+      {/* Push-to-talk dock: the calendar is full-screen, so the app's mic lives
+          here too — hold to speak "zoom avant/arrière", "calendrier mensuel"… */}
+      {renderTalk && (
+        <View style={styles.talkDock} pointerEvents="box-none">
+          {renderTalk(46)}
+        </View>
       )}
     </View>
   );
@@ -441,10 +481,27 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 10,
   },
-  headerLeft: { flexDirection: "row", alignItems: "center", gap: 12 },
-  back: { fontSize: 15, color: "#2f6fed", fontWeight: "700" },
+  headerLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
+  zoomBtn: {
+    backgroundColor: "#e7eefc",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#cfe0ff",
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+  },
+  zoomLabel: { fontSize: 13, color: "#2f6fed", fontWeight: "700" },
   title: { fontSize: 18, fontWeight: "800", color: "#1a1a1a" },
   close: { fontSize: 15, color: "#2f6fed", fontWeight: "700" },
+  // Floating push-to-talk dock (bottom-center); box-none lets touches through
+  // the empty area so the calendar underneath stays interactive.
+  talkDock: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 8,
+    alignItems: "center",
+  },
   chip: {
     backgroundColor: "#eaf0ff",
     borderRadius: 8,

@@ -21,6 +21,7 @@ import CalendarView from "./calendar";
 import {
   dispatch,
   taskEmoji,
+  CAL_LABEL,
   STATUS_EMOJI,
   STATUS_LABEL,
   type CalRange,
@@ -67,7 +68,18 @@ const TEST_PHRASES = [
   "affiche le calendrier mensuel",
   "affiche le calendrier annuel",
   "affiche le calendrier quotidien",
+  "zoom avant",
+  "zoom arrière",
 ];
+
+// Calendar zoom levels, narrowest → widest. "out" widens (day→week→month→year),
+// "in" adds detail (year→month→week→day). Shared with the same order in
+// calendar.tsx; kept here so voice zoom resolves the next level.
+const CAL_LEVELS: CalRange[] = ["day", "week", "month", "year"];
+const widerLevel = (r: CalRange): CalRange =>
+  CAL_LEVELS[Math.min(CAL_LEVELS.length - 1, CAL_LEVELS.indexOf(r) + 1)];
+const narrowerLevel = (r: CalRange): CalRange =>
+  CAL_LEVELS[Math.max(0, CAL_LEVELS.indexOf(r) - 1)];
 
 // Robust ISO parsing: Hermes (RN engine) returns NaN for "2026-06-15T14:00"
 // (no seconds), so build the Date from parts manually. Returns local-time ms.
@@ -151,8 +163,13 @@ export default function App() {
   const [lastRevert, setLastRevert] = useState<Revert | null>(null);
   const [candidates, setCandidates] = useState<Task[] | null>(null);
   const [pending, setPending] = useState<PendingAction | null>(null);
-  // Graphical calendar overlay (landscape); null = not shown.
-  const [calendar, setCalendar] = useState<CalRange | null>(null);
+  // Graphical calendar overlay (landscape); null = not shown. The zoom level
+  // (range) and the date it's anchored on are the single source of truth, so
+  // zoom behaves identically from touch and from voice.
+  const [calendar, setCalendar] = useState<{
+    range: CalRange;
+    anchor: Date;
+  } | null>(null);
   // Folder labels currently collapsed in the task list (accordion).
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const toggleFolder = (label: string) =>
@@ -190,11 +207,14 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Calendars are landscape; everything else is portrait.
+  // Calendars are landscape; everything else is portrait. We lock to a FIXED
+  // landscape orientation (LEFT) rather than the sensor-based LANDSCAPE so the
+  // calendar reads the natural way the phone is held — i.e. rotated 180° from
+  // LANDSCAPE_RIGHT (swap back to LANDSCAPE_RIGHT to flip the other way).
   useEffect(() => {
     ScreenOrientation.lockAsync(
       calendar
-        ? ScreenOrientation.OrientationLock.LANDSCAPE
+        ? ScreenOrientation.OrientationLock.LANDSCAPE_LEFT
         : ScreenOrientation.OrientationLock.PORTRAIT_UP,
     ).catch(() => {});
   }, [calendar]);
@@ -320,8 +340,9 @@ export default function App() {
     setSummaryEmoji("");
     console.log(`[KAIROS] input :: ${text}`);
     // Bridge the wait (on-device inference takes a few seconds) until we can
-    // confirm what was understood.
-    speak("ok");
+    // confirm what was understood — but pause 2s first so the "ok" doesn't jump
+    // in on top of the user. Cancelled in `finally` if inference finishes sooner.
+    const okTimer = setTimeout(() => speak("ok"), 2000);
     try {
       const r = await parseIntent(text);
       setIntentJson(r.json);
@@ -354,14 +375,34 @@ export default function App() {
         setSummaryEmoji(res.emoji);
         speak(res.speech);
       } else if (res.calendar) {
-        // System command: open the graphical (landscape) calendar.
-        setCalendar(res.calendar);
+        // System command: open the graphical (landscape) calendar — or, if it's
+        // already open, switch to the named level while keeping the same anchor.
+        setCalendar((c) => ({ range: res.calendar!, anchor: c?.anchor ?? new Date() }));
         setDisplay(null);
         setCandidates(null);
         setPending(null);
         setSummary(res.speech);
         setSummaryEmoji(res.emoji);
         speak(res.speech);
+      } else if (res.calendarZoom) {
+        // Relative zoom of the open calendar (voice). Resolve the resulting
+        // level from the current one, keep the anchor, and speak that level.
+        if (calendar) {
+          const next =
+            res.calendarZoom === "out"
+              ? widerLevel(calendar.range)
+              : narrowerLevel(calendar.range);
+          setCalendar({ range: next, anchor: calendar.anchor });
+          const sp = `Calendrier ${CAL_LABEL[next]}.`;
+          setSummary(sp);
+          setSummaryEmoji("🔍");
+          speak(sp);
+        } else {
+          const sp = "Le calendrier n'est pas ouvert.";
+          setSummary(sp);
+          setSummaryEmoji("🗓️");
+          speak(sp);
+        }
       } else {
         if (res.show) {
           setDisplay(res.show); // system command: show the task list
@@ -383,6 +424,7 @@ export default function App() {
       addLog(`✗ intent: ${e?.message ?? e}`);
       console.log(`[KAIROS] intent error: ${e?.message ?? e}`);
     } finally {
+      clearTimeout(okTimer);
       setProcessing(false);
     }
   };
@@ -640,14 +682,21 @@ export default function App() {
 
   // The logo doubles as the push-to-talk button once the model is ready: hold
   // to listen. A colored halo appears while listening (green) or speaking (blue).
+  // Disabled while an utterance is still being understood/displayed (processing)
+  // so a new command can't start before the current one is fully resolved.
   const renderTalk = (size: number) => {
     const ring = size + 30;
     return (
       <Pressable
         onPressIn={startListening}
         onPressOut={stopListening}
+        disabled={processing}
         hitSlop={12}
-        style={({ pressed }) => [styles.talkBtn, pressed && styles.talkPressed]}
+        style={({ pressed }) => [
+          styles.talkBtn,
+          pressed && styles.talkPressed,
+          processing && styles.talkBtnDisabled,
+        ]}
       >
         {/* Circle around the logo: blue by default, green while listening. */}
         <View
@@ -709,12 +758,18 @@ export default function App() {
     );
   }
 
-  // Graphical calendar overlay (landscape) — focused full-screen view.
+  // Graphical calendar overlay (landscape) — focused full-screen view. Zoom is
+  // controlled from here: tap-to-drill and the ± buttons report (range, anchor)
+  // via onNavigate; renderTalk hands the calendar its own push-to-talk so voice
+  // zoom works while it's full-screen.
   if (calendar) {
     return (
       <CalendarView
-        range={calendar}
+        range={calendar.range}
+        anchor={calendar.anchor}
         tasks={tasks}
+        onNavigate={(range, anchor) => setCalendar({ range, anchor })}
+        renderTalk={renderTalk}
         onClose={() => setCalendar(null)}
       />
     );
@@ -931,7 +986,8 @@ const styles = StyleSheet.create({
     transform: [{ translateY: 88 }],
   },
   loaderSpin: { transform: [{ scale: 5.2 }] },
-  logo: { width: LOGO_SIZE, height: LOGO_SIZE },
+  // Splash logo only (the PTT logo sizes itself inline). Nudged down 3px.
+  logo: { width: LOGO_SIZE, height: LOGO_SIZE, transform: [{ translateY: 3 }] },
   // Centered like the logo, then pushed down to sit just below the circle.
   pctWrap: {
     ...StyleSheet.absoluteFillObject,
@@ -1018,6 +1074,7 @@ const styles = StyleSheet.create({
   miniDue: { fontSize: 12, color: "#2f6fed" },
   talkBtn: { alignItems: "center", justifyContent: "center" },
   talkPressed: { opacity: 0.85 },
+  talkBtnDisabled: { opacity: 0.4 },
   talkRing: { position: "absolute", borderWidth: 6, borderColor: "#2f6fed" },
   talkRingListening: { borderColor: "#2e9e5b" },
   dockTalk: { alignItems: "center", paddingVertical: 6 },

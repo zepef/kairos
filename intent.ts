@@ -3,12 +3,31 @@ import {
   deleteTaskById,
   findCandidates,
   getTaskById,
+  listTasks,
   logIntent,
   updateTaskById,
   type Revert,
   type Task,
   type TaskStatus,
 } from "./db";
+
+// Hermes returns NaN for ISO without seconds — parse from parts (cf. App.tsx).
+// Used to resolve a task's due date when clearing a whole day.
+function parseIso(iso: unknown): number {
+  if (typeof iso !== "string") return NaN;
+  const m = iso.match(
+    /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?/,
+  );
+  if (!m) return NaN;
+  return new Date(
+    +m[1],
+    +m[2] - 1,
+    +m[3],
+    +(m[4] ?? 0),
+    +(m[5] ?? 0),
+    +(m[6] ?? 0),
+  ).getTime();
+}
 
 // J4: turn Gemma's JSON action into a real DB mutation / view change + a spoken
 // confirmation. Two intent families: data (createTask/setStatus) and system
@@ -51,6 +70,8 @@ export type DispatchResult = {
   candidates?: Task[]; // ambiguous reference: which task did you mean?
   pending?: PendingAction; // the mutation to run once the candidate is chosen
   calendar?: CalRange; // system command: open a graphical calendar (landscape)
+  calendarZoom?: "in" | "out"; // relative zoom of the open calendar (in = more
+  // detail, year→month→week→day ; out = wider, day→week→month→year)
 };
 
 function toCalRange(raw: unknown): CalRange {
@@ -61,7 +82,16 @@ function toCalRange(raw: unknown): CalRange {
   return "day";
 }
 
-const CAL_LABEL: Record<CalRange, string> = {
+// Relative zoom direction: "in" = zoom in (more detail, toward the day view),
+// "out" = zoom out (wider, toward the year view).
+function toZoomDir(raw: unknown): "in" | "out" {
+  const s = String(raw ?? "").toLowerCase();
+  if (/(out|arrière|arriere|dézoom|dezoom|élarg|elarg|recul|large|ensemble|éloign|eloign)/.test(s))
+    return "out";
+  return "in";
+}
+
+export const CAL_LABEL: Record<CalRange, string> = {
   day: "quotidien",
   week: "hebdomadaire",
   month: "mensuel",
@@ -370,6 +400,62 @@ export async function dispatch(
       }
       break;
     }
+    // Delete SEVERAL tasks at once — by displayed numbers ("supprime les 1, 3 et
+    // 5") or every open task on a given day ("efface toutes les tâches de lundi"
+    // -> dayISO). Reversible as a single "annule" that restores them all.
+    case "deleteTasks":
+    case "removeTasks":
+    case "clearDay": {
+      let targets: Task[] = [];
+      const nums = Array.isArray(obj.numbers)
+        ? obj.numbers
+        : Array.isArray(obj.refs)
+          ? obj.refs
+          : null;
+      if (nums && nums.length) {
+        const seen = new Set<number>();
+        for (const raw of nums) {
+          const n = typeof raw === "number" ? raw : parseInt(String(raw), 10);
+          if (!Number.isFinite(n) || n < 1 || n > numberedIds.length) continue;
+          const id = numberedIds[n - 1];
+          if (seen.has(id)) continue;
+          seen.add(id);
+          const t = await getTaskById(id);
+          if (t) targets.push(t);
+        }
+      } else {
+        const ms = parseIso(obj.dayISO ?? obj.day ?? obj.dueISO ?? obj.scope);
+        if (!Number.isNaN(ms)) {
+          const d = new Date(ms);
+          const start = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+          const end = start + 24 * 3600 * 1000;
+          const openTasks = await listTasks("open");
+          targets = openTasks.filter((t) => {
+            const tms = parseIso(t.due_iso);
+            return !Number.isNaN(tms) && tms >= start && tms < end;
+          });
+        }
+      }
+      if (targets.length === 0) {
+        out = {
+          ok: false,
+          tool: "deleteTasks",
+          speech: "Je n'ai trouvé aucune tâche à supprimer.",
+          emoji: "❓",
+        };
+        break;
+      }
+      for (const t of targets) await deleteTaskById(t.id);
+      const n = targets.length;
+      out = {
+        ok: true,
+        tool: "deleteTasks",
+        speech: `${n} tâche${n > 1 ? "s" : ""} supprimée${n > 1 ? "s" : ""}. Dites « annule » pour tout récupérer.`,
+        emoji: "🗑️",
+        revert: { kind: "reinsertMany", tasks: targets },
+      };
+      break;
+    }
     // Undo the last mutation — App holds the revert and performs it.
     case "undo":
     case "annuler": {
@@ -412,6 +498,20 @@ export async function dispatch(
         speech: `Voici le calendrier ${CAL_LABEL[cal]}.`,
         emoji: "🗓️",
         calendar: cal,
+      };
+      break;
+    }
+    // Relative zoom of the open calendar (App resolves the resulting level from
+    // the current one, then speaks it). in = more detail, out = wider.
+    case "zoomCalendar":
+    case "zoom": {
+      const dir = toZoomDir(obj.direction ?? obj.zoom ?? obj.range);
+      out = {
+        ok: true,
+        tool: "zoomCalendar",
+        speech: dir === "out" ? "Je dézoome." : "Je zoome.",
+        emoji: "🔍",
+        calendarZoom: dir,
       };
       break;
     }

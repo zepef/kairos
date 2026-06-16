@@ -66,18 +66,21 @@ Outils disponibles :
 - {"tool":"setStatus","title":<string>,"status":<"done"|"pending"|"postponed"|"archived"|"todo">}  (changer le statut d'une tâche existante)
 - {"tool":"showTasks","scope":<"all"|"hours"|"day"|"week"|"month"|"overdue"|"reminder">,"category":<string|null>,"person":<string|null>,"place":<string|null>,"status":<"pending"|"postponed"|"done"|"archived"|"todo"|null>,"urgent":<true|false>}  (commande système : AFFICHER les tâches ; ne crée/modifie rien)
 - {"tool":"updateTask","title":<référence>,"changes":{"title?":<string>,"due?":<string>,"dueISO?":<string>,"priority?":<0|1|2|3>,"category?":<string>,"subcategory?":<string>,"person?":<string>,"place?":<string>,"status?":<string>}}  (MODIFIER une tâche existante : ne mets dans "changes" QUE les champs à changer)
-- {"tool":"deleteTask","title":<référence>}  (SUPPRIMER une tâche)
+- {"tool":"deleteTask","title":<référence>}  (SUPPRIMER UNE seule tâche)
+- {"tool":"deleteTasks","numbers":<[int,...]|null>,"dayISO":<string|null>}  (SUPPRIMER PLUSIEURS tâches d'un coup : soit une liste de NUMÉROS affichés, soit toutes les tâches d'une JOURNÉE via dayISO)
 - {"tool":"undo"}  ("annule", "reviens en arrière" : défaire la dernière action)
-- {"tool":"showCalendar","range":<"day"|"week"|"month"|"year">}  (commande système : ouvrir le CALENDRIER graphique en paysage)
+- {"tool":"showCalendar","range":<"day"|"week"|"month"|"year">}  (commande système : ouvrir le CALENDRIER graphique en paysage, ou changer de niveau s'il est déjà ouvert)
+- {"tool":"zoomCalendar","direction":<"in"|"out">}  (zoomer le calendrier OUVERT d'un niveau : in = plus de détail (année->mois->semaine->jour) ; out = plus large (jour->semaine->mois->année))
 - {"tool":"unknown"} si rien ne correspond.
 "due" reprend l'expression temporelle telle quelle (ex: "demain 14h").
 "dueISO" = échéance résolue en date ISO 8601 ("2026-06-15T14:00") depuis la DATE ACTUELLE fournie, ou null.
-"category" (niveau 1) : si un PROJET est nommé (ex. "projet Mon Assistant Pro"), category = nom du projet ; sinon dossier thématique court (Santé, Appels, Rendez-vous, Courses, Travail, Finances, Famille, Divers).
+"category" (niveau 1) : si un PROJET est nommé (ex. "projet Mon Assistant Pro"), category = nom du projet ; sinon dossier thématique court (Santé, Contact, Rendez-vous, Courses, Travail, Finances, Famille, Divers).
 "subcategory" (niveau 2, optionnel) = sous-dossier (ex. projet -> "UI", "Tests") sinon null.
 "person" (QUI) = la personne nommée/évoquée ("avec Paul", "pour maman", "appeler le dentiste") -> "Paul"/"Maman"/"Dentiste" ; sinon null.
 "place" (OÙ) = le lieu ou contexte ("au bureau", "à la maison", "à Paris", "chez le médecin") -> "Bureau"/"Maison"/"Paris" ; sinon null.
 Pour createTask, mets priority à 2 ou 3 si l'urgence est exprimée ("urgent", "important", "au plus vite", "vite").
 Garde dans "title" la tâche concrète, sans préambule projet/sous-dossier/personne/lieu.
+Si l'action est d'APPELER / téléphoner / rappeler / contacter une personne ("appeler Paul", "téléphoner à Marie", "rappeler le client"), category = "Contact" (et mets la personne dans "person"), même si un lieu comme "au bureau" est mentionné.
 setStatus : "marque/passe X en attente" -> pending ; "X est faite/accomplie/terminée" -> done ; "reporte X / à plus tard" -> postponed ; "archive X" -> archived ; "réactive X" -> todo.
 showTasks : combine librement ces dimensions (toutes facultatives) :
  - scope (QUAND) : "affiche les tâches" -> all ; "prochaines heures" -> hours ; "du jour/aujourd'hui" -> day ; "de la semaine" -> week ; "du mois" -> month ; "en retard/échéance dépassée" -> overdue ; "rappel / qu'est-ce qui arrive / à venir et en retard" -> reminder. Si AUCUNE mention temporelle n'est faite, scope = "all" (ne mets jamais "day" par défaut).
@@ -89,7 +92,9 @@ showTasks : combine librement ces dimensions (toutes facultatives) :
  Ex. "les tâches urgentes en retard pour Paul" -> {"tool":"showTasks","scope":"overdue","category":null,"person":"Paul","place":null,"status":null,"urgent":true}.
 "title" (référence) pour setStatus/updateTask/deleteTask = ce qui désigne la tâche. Les tâches affichées sont NUMÉROTÉES : si l'utilisateur cite un numéro ("supprime la 2", "la tâche 3 est faite", "modifie la 1"), mets ce numéro dans "title" (ex. "2"). Sinon mets les mots-clés du titre.
 updateTask : "reporte X à mardi 15h" -> changes.due/dueISO ; "renomme X en Y" -> changes.title="Y" ; "range X dans Santé" -> changes.category="Santé" ; "mets X urgent" -> changes.priority=3 ; "X c'est avec Paul / au bureau" -> changes.person/place.
+deleteTask vs deleteTasks : UNE seule tâche ("supprime la 2", "efface le rapport") -> deleteTask. PLUSIEURS d'un coup : "supprime les tâches 1, 3 et 5" / "efface les 2 et 4" -> deleteTasks avec numbers=[1,3,5] ; "efface TOUTES les tâches d'aujourd'hui / de lundi / du 18 juin / de cette journée" -> deleteTasks avec dayISO = la date de ce jour (AAAA-MM-JJ) résolue depuis la DATE ACTUELLE, numbers=null.
 showCalendar : "calendrier quotidien/du jour" -> day ; "calendrier hebdomadaire/de la semaine" -> week ; "calendrier mensuel/du mois" -> month ; "calendrier annuel/de l'année" -> year.
+zoomCalendar (calendrier déjà ouvert) : "zoome / zoom avant / rapproche / agrandis / plus de détail / plus précis" -> direction="in" ; "dézoome / zoom arrière / recule / élargis / vue d'ensemble / plus large" -> direction="out". Si un NIVEAU précis est nommé ("passe en mensuel", "vue annuelle"), utilise plutôt showCalendar.
 Réponds en JSON compact.`;
 
 export type IntentResult = {

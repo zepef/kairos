@@ -34,7 +34,7 @@ La seule chose que l'utilisateur crée. Tout le reste (dossiers, vues) en dériv
 
 ### 2.2 Dossier (`category`) — niveau 1, émergent
 Regroupement **créé à la volée** quand il est mentionné ; jamais affiché s'il est vide. Deux natures :
-- **Thématique** : déduit du sens (dentiste/médecin → *Santé* ; achats → *Courses* ; *Travail*, *Appels*, *Rendez-vous*, *Finances*, *Famille*, *Divers*).
+- **Thématique** : déduit du sens (dentiste/médecin → *Santé* ; achats → *Courses* ; appeler/téléphoner à quelqu'un → *Contact* ; *Travail*, *Rendez-vous*, *Finances*, *Famille*, *Divers*).
 - **Projet** : si un projet est nommé (« le projet Mon Assistant Pro »), le dossier **est** le nom du projet.
 
 ### 2.3 Sous-dossier (`subcategory`) — niveau 2, optionnel
@@ -78,8 +78,9 @@ Toute parole tombe dans une **intention** (`tool`). Trois familles :
 - **Créer** (`createTask`) → titre + échéance + dossier/sous-dossier + priorité + personne + lieu (déduits).
 - **Modifier** (`updateTask`) → change un ou plusieurs attributs d'une tâche existante (`changes` partiels) : replanifier (`due`/`dueISO`), déplacer (`category`), renommer (`title`), réaffecter (`person`/`place`), reprioriser (`priority`).
 - **Changer le statut** (`setStatus`) → done / pending / postponed / archived / todo (cas particulier d'Update, verbe distinct).
-- **Supprimer** (`deleteTask`) → suppression réelle mais **réversible** via « annule ».
-- **Annuler** (`undo`, « annule ») → défait la dernière mutation (create/update/status/delete). Rend tout réversible d'un mot.
+- **Supprimer** (`deleteTask`) → suppression réelle d'**une** tâche, mais **réversible** via « annule ».
+- **Supprimer en groupe** (`deleteTasks`) → supprime **plusieurs** tâches d'un coup : soit une liste de **numéros** affichés (« supprime les 1, 3 et 5 »), soit **toutes les tâches d'une journée** (« efface toutes les tâches de lundi » → `dayISO`). Réversible **en bloc** par un seul « annule ».
+- **Annuler** (`undo`, « annule ») → défait la dernière mutation (create/update/status/delete/deleteTasks). Rend tout réversible d'un mot, y compris une suppression de groupe restaurée d'un coup.
 
 **Référence à une tâche & désambiguïsation.** Les commandes ci-dessus visent UNE tâche. Tout ce qui est affiché (mini-agenda d'accueil, liste, candidats) est **numéroté** : la façon la plus sûre de désigner une tâche est son **numéro** (« supprime la 2 », « la 3 est faite », « modifie la 1 »). À défaut, on résout par mots-clés du titre :
 - 0 correspondance → l'app le dit ;
@@ -103,6 +104,8 @@ Toute parole tombe dans une **intention** (`tool`). Trois familles :
   Exemples composés : « affiche les tâches de la semaine pour Kairos » → `scope:week, category:"Kairos"` · « les tâches urgentes en retard pour Paul » → `scope:overdue, urgent:true, person:"Paul"` · « ce qui est en attente au bureau » → `status:pending, place:"Bureau"`.
 
   Règles : sans mention temporelle, `scope:all`. Sans filtre `status`, la liste est « ouverte » (exclut `done`/`archived`) ; un `status` explicite peut faire ressortir `done`/`archived`. Les tâches sans date n'apparaissent pas dans les fenêtres temporelles (seulement `all`). `overdue` = échéance < maintenant ; `reminder` = échéance ≤ +24 h (donc à venir + déjà en retard).
+- **Calendrier graphique** (`showCalendar`) → ouvre un calendrier plein écran **en paysage** (« à l'italienne ») à une granularité donnée : `day` / `week` / `month` / `year`. Lecture seule ; navigation par tap (drill sur un mois/jour) et par boutons de zoom. Masquer (`✕`) renvoie à l'accueil.
+- **Zoomer le calendrier** (`zoomCalendar`) → change la granularité du calendrier **ouvert** d'un cran : `in` = plus de détail (année→mois→semaine→jour), `out` = plus large (jour→semaine→mois→année). Disponible au tactile (boutons ±) **et** à la voix (« zoom avant / arrière »).
 - (futur) **COMMENT** (type d'action : appel/email/rdv/achat), **POURQUOI** (objectif), **DURÉE/EFFORT**, **RÉCURRENCE** ; modificateurs **TRI** et **MODE** (liste vs résumé/compte) ; masquer ciblé, rechercher.
 
 ### 4.3 **Inconnu**
@@ -128,6 +131,7 @@ Gemma est le **traducteur d'ontologie** : il fait correspondre une formulation l
 | On dit… | Intention | Détail |
 |---|---|---|
 | « ajoute… », « rappelle-moi de… », « pour le projet X… », « appeler Paul au bureau, urgent » | `createTask` | dossier = thème ou projet ; `person`/`place`/`priority` déduits |
+| « appeler / téléphoner à / rappeler X » | `createTask` | `category = "Contact"` (la personne va dans `person`), même si un lieu est dit |
 | « marque X en attente » | `setStatus` | pending |
 | « X est faite / accomplie » | `setStatus` | done |
 | « reporte X / plus tard » | `setStatus` | postponed |
@@ -139,8 +143,11 @@ Gemma est le **traducteur d'ontologie** : il fait correspondre une formulation l
 | « qu'est-ce qui est en retard ? » | `showTasks` | `scope:overdue` |
 | « affiche les tâches urgentes » | `showTasks` | `urgent:true` |
 | « rappelle-moi ce qui arrive et ce qui est en retard » | `showTasks` | `scope:reminder` |
+| « affiche le calendrier [du jour / hebdomadaire / mensuel / annuel] » | `showCalendar` | `range` = day/week/month/year (paysage) |
+| « zoome / zoom avant », « dézoome / zoom arrière » | `zoomCalendar` | `in` (plus de détail) / `out` (plus large) sur le calendrier ouvert |
 | « reporte la 2 à mardi 15h », « renomme la 1 en… », « range X dans Santé » | `updateTask` | `changes` partiels ; référence par **numéro** |
-| « supprime la 3 », « efface X » | `deleteTask` | réversible via « annule » |
+| « supprime la 3 », « efface X » | `deleteTask` | UNE tâche ; réversible via « annule » |
+| « supprime les tâches 1, 3 et 5 », « efface toutes les tâches de lundi / d'aujourd'hui » | `deleteTasks` | plusieurs (par `numbers`) ou toute une journée (`dayISO`) ; réversible en bloc |
 | « annule », « reviens en arrière » | `undo` | défait la dernière mutation |
 
 ---

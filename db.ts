@@ -27,7 +27,8 @@ export type Task = {
 export type Revert =
   | { kind: "delete"; id: number } // undo a create
   | { kind: "update"; id: number; fields: Record<string, unknown> } // restore columns
-  | { kind: "reinsert"; task: Task }; // undo a delete
+  | { kind: "reinsert"; task: Task } // undo a delete
+  | { kind: "reinsertMany"; tasks: Task[] }; // undo a multi-delete
 
 const UPDATABLE = new Set([
   "title",
@@ -256,6 +257,8 @@ export async function applyRevert(r: Revert): Promise<void> {
   if (r.kind === "delete") await deleteTaskById(r.id);
   else if (r.kind === "update") await updateTaskById(r.id, r.fields);
   else if (r.kind === "reinsert") await insertFullTask(r.task);
+  else if (r.kind === "reinsertMany")
+    for (const t of r.tasks) await insertFullTask(t);
 }
 
 export async function logIntent(entry: {
