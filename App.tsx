@@ -21,9 +21,7 @@ import CalendarView from "./calendar";
 import {
   dispatch,
   taskEmoji,
-  CAL_LABEL,
   STATUS_EMOJI,
-  STATUS_LABEL,
   type CalRange,
   type PendingAction,
   type Scope,
@@ -38,10 +36,13 @@ import {
   type Revert,
   type Task,
 } from "./db";
+import { tr, type Lang, STT_LANG, TTS_LANG } from "./i18n";
+import { LangToggle } from "./flags";
 
-// Kairos — STT (FR) + on-device intent parsing with Gemma 4 (E2B) via llama.rn.
-// Voice -> STT -> Gemma 4 (JSON action) -> execute on local SQLite -> TTS.
-const LANG = "fr-FR";
+// Kairos — STT (FR/EN) + on-device intent parsing with Gemma 4 (E2B) via
+// llama.rn. Voice -> STT -> Gemma 4 (JSON action) -> execute on SQLite -> TTS.
+// The active language (state below) drives STT/TTS locale, the Gemma system
+// prompt and every on-screen + spoken string (see i18n.ts).
 
 // Kairos logo — centered on the launch screen and used as the PTT button.
 const LOGO = require("./assets/kairos-logo.png");
@@ -52,25 +53,53 @@ const LOGO_SIZE = 132;
 type Status = "idle" | "listening" | "speaking";
 type ModelStatus = "unloaded" | "loading" | "ready" | "error";
 
-// Dev test phrases (cycled by the "Tester l'intention" button) to drive the
-// intent loop without voice.
-const TEST_PHRASES = [
-  "ajoute appeler Paul demain 10h au bureau, c'est urgent",
-  "ajoute acheter du pain ce soir à la maison",
-  "affiche toutes les tâches",
-  "marque la 1 comme faite",
-  "reporte la 2 à vendredi 9h",
-  "renomme la 1 en acheter une baguette",
-  "supprime la 1",
-  "annule",
-  "qu'est-ce qui est en retard",
-  "affiche le calendrier hebdomadaire",
-  "affiche le calendrier mensuel",
-  "affiche le calendrier annuel",
-  "affiche le calendrier quotidien",
-  "zoom avant",
-  "zoom arrière",
-];
+// Dev test phrases (cycled by the "Tester" button) to drive the intent loop
+// without voice — per language, so the chip exercises whichever Gemma prompt is
+// active.
+const TEST_PHRASES: Record<Lang, string[]> = {
+  fr: [
+    "ajoute appeler Paul demain 10h au bureau, c'est urgent",
+    "ajoute acheter du pain ce soir à la maison",
+    "affiche toutes les tâches",
+    "marque la 1 comme faite",
+    "reporte la 2 à vendredi 9h",
+    "renomme la 1 en acheter une baguette",
+    "supprime la 1",
+    "annule",
+    "qu'est-ce qui est en retard",
+    "affiche le calendrier hebdomadaire",
+    "affiche le calendrier mensuel",
+    "affiche le calendrier annuel",
+    "affiche le calendrier quotidien",
+    "zoom avant",
+    "zoom arrière",
+    "ajoute une note à la tâche 1 : penser à apporter le dossier bleu",
+    "complète la note de la 1 : et prévoir le parking",
+    "déplace la 1 dans le dossier Travail",
+    "lis la note de la 1",
+  ],
+  en: [
+    "add call Paul tomorrow 10am at the office, it's urgent",
+    "add buy bread tonight at home",
+    "show all tasks",
+    "mark 1 as done",
+    "postpone 2 to Friday 9am",
+    "rename 1 to buy a baguette",
+    "delete 1",
+    "undo",
+    "what's overdue",
+    "show the weekly calendar",
+    "show the monthly calendar",
+    "show the yearly calendar",
+    "show the daily calendar",
+    "zoom in",
+    "zoom out",
+    "add a note to task 1: remember to bring the blue folder",
+    "append to the note of 1: and plan for parking",
+    "move 1 to the Work folder",
+    "read the note of 1",
+  ],
+};
 
 // Calendar zoom levels, narrowest → widest. "out" widens (day→week→month→year),
 // "in" adds detail (year→month→week→day). Shared with the same order in
@@ -114,11 +143,11 @@ type Folder = {
   count: number;
   subs: { label: string; items: Task[] }[];
 };
-function buildFolders(items: Task[]): Folder[] {
+function buildFolders(items: Task[], miscLabel: string): Folder[] {
   type Sub = { label: string; items: Task[] };
   const map = new Map<string, { label: string; subs: Map<string, Sub> }>();
   for (const t of items) {
-    const cat = t.category || "Divers";
+    const cat = t.category || miscLabel;
     const ck = cat.toLowerCase();
     if (!map.has(ck)) map.set(ck, { label: cat, subs: new Map() });
     const folder = map.get(ck)!;
@@ -143,6 +172,9 @@ export default function App() {
   const [status, setStatus] = useState<Status>("idle");
   const [log, setLog] = useState<string[]>([]);
   const [testIdx, setTestIdx] = useState(0);
+  // Active UI/voice language (FR launch default), toggled by the bottom flags.
+  // Drives STT/TTS locale, the Gemma prompt and every string via L = tr(lang).
+  const [lang, setLang] = useState<Lang>("fr");
 
   const [modelStatus, setModelStatus] = useState<ModelStatus>("unloaded");
   const [loadPct, setLoadPct] = useState(0);
@@ -163,6 +195,22 @@ export default function App() {
   const [lastRevert, setLastRevert] = useState<Revert | null>(null);
   const [candidates, setCandidates] = useState<Task[] | null>(null);
   const [pending, setPending] = useState<PendingAction | null>(null);
+  // Note-capture mode: when set, the NEXT utterance is stored verbatim as this
+  // task's note (it bypasses Gemma so the dictated note isn't parsed as a
+  // command). prevNote is kept so "annule" can restore the previous note.
+  const [noteCapture, setNoteCapture] = useState<{
+    taskId: number;
+    title: string;
+    prevNote: string | null;
+    append: boolean; // true = concat to prevNote, false = replace
+  } | null>(null);
+  // "modifie la note" is ambiguous: hold the task while we ask the user whether
+  // to edit (replace) / append / erase; the next utterance picks the operation.
+  const [noteChoice, setNoteChoice] = useState<{
+    taskId: number;
+    title: string;
+    prevNote: string | null;
+  } | null>(null);
   // Graphical calendar overlay (landscape); null = not shown. The zoom level
   // (range) and the date it's anchored on are the single source of truth, so
   // zoom behaves identically from touch and from voice.
@@ -178,6 +226,10 @@ export default function App() {
       next.has(label) ? next.delete(label) : next.add(label);
       return next;
     });
+
+  // The translated strings for the active language. Used everywhere below
+  // (callbacks + render) for both on-screen text and TTS feedback.
+  const L = tr(lang);
 
   // The launch loader is the native ActivityIndicator: it's animated by the
   // Android system, so it stays smooth even though the JS thread freezes in
@@ -253,7 +305,7 @@ export default function App() {
     if (!ttsOn) return; // voice output disabled via the TTS toggle
     setStatus("speaking");
     Speech.speak(text, {
-      language: LANG,
+      language: TTS_LANG[lang],
       onDone: () => setStatus("idle"),
       onStopped: () => setStatus("idle"),
       onError: () => setStatus("idle"),
@@ -267,7 +319,7 @@ export default function App() {
     warmAnnounced.current = false;
     addLog("⏳ chargement…");
     // Voice cue: the only thing the app says while the model file loads.
-    speak("Patienter pendant le chargement du modèle.");
+    speak(L.loadingModel);
     try {
       const { ms } = await loadModel((p) => {
         // initLlama reports 0..1 or 0..100 depending on platform — normalize.
@@ -277,7 +329,7 @@ export default function App() {
         // File done -> warm-up begins; announce it once.
         if (pct >= 100 && !warmAnnounced.current) {
           warmAnnounced.current = true;
-          speak("Initialisation du système.");
+          speak(L.initSystem);
         }
       });
       setLoadPct(100);
@@ -286,9 +338,7 @@ export default function App() {
       addLog(`✓ prêt (${(ms / 1000).toFixed(1)}s)`);
       console.log(`[KAIROS] model ready in ${ms}ms`);
       // PTT now visible: tell the user how to use it (once — loadGemma runs once).
-      speak(
-        "Maintenez le bouton central appuyé pour enregistrer votre commande.",
-      );
+      speak(L.holdButton);
     } catch (e: any) {
       setModelStatus("error");
       addLog(`✗ load model: ${e?.message ?? e}`);
@@ -297,6 +347,102 @@ export default function App() {
   };
 
   const runIntent = async (text: string) => {
+    // Note-operation follow-up: we asked "edit / append / erase?" so THIS
+    // utterance picks the operation (never sent to Gemma). edit/append then open
+    // dictation; erase clears now; anything else cancels.
+    if (noteChoice) {
+      const ch = noteChoice;
+      setNoteChoice(null);
+      setHeard(text);
+      const s = text.toLowerCase().trim();
+      if (/(édit|edit|modif|remplac|replace|rewrite|overwrite|écras|ecras|refai|nouvelle|new)/.test(s)) {
+        setNoteCapture({
+          taskId: ch.taskId,
+          title: ch.title,
+          prevNote: ch.prevNote,
+          append: false,
+        });
+        const sp = L.whichNote(ch.title);
+        setSummary(sp);
+        setSummaryEmoji("📝");
+        speak(sp);
+        return;
+      }
+      if (/(ajout|complèt|complet|complete|append|rajout|suite|aussi|also|more)/.test(s)) {
+        setNoteCapture({
+          taskId: ch.taskId,
+          title: ch.title,
+          prevNote: ch.prevNote,
+          append: true,
+        });
+        const sp = L.whatToAddToNote(ch.title);
+        setSummary(sp);
+        setSummaryEmoji("📝");
+        speak(sp);
+        return;
+      }
+      if (/(efface|supprim|enlèv|enlev|retir|vide|détru|detru|erase|delete|remove|clear|wipe)/.test(s)) {
+        setProcessing(true);
+        try {
+          await updateTaskById(ch.taskId, { note: null });
+          setLastRevert({
+            kind: "update",
+            id: ch.taskId,
+            fields: { note: ch.prevNote },
+          });
+          await refreshTasks();
+          const sp = L.noteRemovedUndo(ch.title);
+          setSummary(sp);
+          setSummaryEmoji("🗑️");
+          speak(sp);
+        } finally {
+          setProcessing(false);
+        }
+        return;
+      }
+      // Not a recognized choice -> abandon the edit, keep the note intact.
+      const sp = L.noteUntouched;
+      setSummary(sp);
+      setSummaryEmoji("✖️");
+      speak(sp);
+      return;
+    }
+
+    // Note-capture follow-up: we asked for a note, so THIS utterance is the note
+    // itself (stored verbatim, never sent to Gemma) — unless it's a cancel word.
+    if (noteCapture) {
+      const nc = noteCapture;
+      setNoteCapture(null);
+      setHeard(text);
+      if (/^(annul|laisse|aucun|rien|tant pis|non merci|stop|cancel|never mind|nothing|forget|skip|none)/i.test(text.trim())) {
+        setSummary(L.noteCancelled);
+        setSummaryEmoji("✖️");
+        speak(L.noteCancelled);
+        return;
+      }
+      setProcessing(true);
+      try {
+        const noteVal = text.trim();
+        // append mode concatenates to the previous note; otherwise it replaces.
+        const finalNote =
+          nc.append && nc.prevNote ? `${nc.prevNote} ${noteVal}` : noteVal;
+        await updateTaskById(nc.taskId, { note: finalNote });
+        setLastRevert({
+          kind: "update",
+          id: nc.taskId,
+          fields: { note: nc.prevNote },
+        });
+        await refreshTasks();
+        const sp = nc.append ? L.noteCompleted(nc.title) : L.noteSaved(nc.title);
+        setSummary(sp);
+        setSummaryEmoji("📝");
+        speak(sp);
+      } finally {
+        setProcessing(false);
+      }
+      return;
+    }
+
     // Disambiguation follow-up: a mutation is waiting for which task.
     if (pending && candidates) {
       const sel = pickCandidate(text, candidates);
@@ -304,9 +450,59 @@ export default function App() {
         setPending(null);
         setCandidates(null);
         setHeard(text);
-        setSummary("Annulé.");
+        setSummary(L.cancelled);
         setSummaryEmoji("✖️");
-        speak("Annulé.");
+        speak(L.cancelled);
+        return;
+      }
+      // A note pending resolves specially: undefined note -> enter capture mode
+      // for the chosen task; "" -> clear its note; non-empty -> save it.
+      if (sel && pending.kind === "note") {
+        const append = pending.append ?? false;
+        setPending(null);
+        setCandidates(null);
+        setHeard(text);
+        if (pending.note === undefined) {
+          setNoteCapture({
+            taskId: sel.id,
+            title: sel.title,
+            prevNote: sel.note,
+            append,
+          });
+          const sp = append
+            ? L.whatToAddToNote(sel.title)
+            : L.whichNote(sel.title);
+          setSummary(sp);
+          setSummaryEmoji("📝");
+          speak(sp);
+          return;
+        }
+        setProcessing(true);
+        try {
+          const clearing = pending.note === "";
+          const finalNote = clearing
+            ? null
+            : append && sel.note
+              ? `${sel.note} ${pending.note}`
+              : pending.note;
+          await updateTaskById(sel.id, { note: finalNote });
+          setLastRevert({
+            kind: "update",
+            id: sel.id,
+            fields: { note: sel.note },
+          });
+          await refreshTasks();
+          const sp = clearing
+            ? L.noteRemoved(sel.title)
+            : append
+              ? L.noteCompleted(sel.title)
+              : L.noteAdded(sel.title);
+          setSummary(sp);
+          setSummaryEmoji(clearing ? "🗑️" : "📝");
+          speak(sp);
+        } finally {
+          setProcessing(false);
+        }
         return;
       }
       if (sel) {
@@ -344,7 +540,7 @@ export default function App() {
     // in on top of the user. Cancelled in `finally` if inference finishes sooner.
     const okTimer = setTimeout(() => speak("ok"), 2000);
     try {
-      const r = await parseIntent(text);
+      const r = await parseIntent(text, lang);
       setIntentJson(r.json);
       setIntentPerf(
         `total ${r.ms}ms · prefill ${r.prefillMs ?? "?"}ms/${r.prefillTokens ?? "?"}tok · ` +
@@ -353,15 +549,15 @@ export default function App() {
       console.log(`[KAIROS] intent ${r.ms}ms ${r.tokensPerSec}tok/s :: ${r.json}`);
       // Numbers shown on screen are how the user references a task.
       const ids = numberedList.map((t) => t.id);
-      const res = await dispatch(r.json, text, ids);
+      const res = await dispatch(r.json, text, ids, lang);
 
       if (res.tool === "undo") {
-        let sp = "Rien à annuler.";
+        let sp = L.nothingToUndo;
         if (lastRevert) {
           await applyRevert(lastRevert);
           setLastRevert(null);
           await refreshTasks();
-          sp = "C'est annulé.";
+          sp = L.undone;
         }
         setSummary(sp);
         setSummaryEmoji("↩️");
@@ -393,16 +589,36 @@ export default function App() {
               ? widerLevel(calendar.range)
               : narrowerLevel(calendar.range);
           setCalendar({ range: next, anchor: calendar.anchor });
-          const sp = `Calendrier ${CAL_LABEL[next]}.`;
+          const sp = L.calendarLevel(L.calLabel[next]);
           setSummary(sp);
           setSummaryEmoji("🔍");
           speak(sp);
         } else {
-          const sp = "Le calendrier n'est pas ouvert.";
+          const sp = L.calendarNotOpen;
           setSummary(sp);
           setSummaryEmoji("🗓️");
           speak(sp);
         }
+      } else if (res.noteCapture) {
+        // The app now waits for the dictated note: the next utterance is stored
+        // verbatim as this task's note (handled at the top of runIntent).
+        setNoteCapture(res.noteCapture);
+        setNoteChoice(null);
+        setCandidates(null);
+        setPending(null);
+        setSummary(res.speech);
+        setSummaryEmoji(res.emoji);
+        speak(res.speech);
+      } else if (res.noteChoice) {
+        // Ambiguous "modify the note": wait for the user to pick edit/append/erase
+        // (resolved at the top of runIntent).
+        setNoteChoice(res.noteChoice);
+        setNoteCapture(null);
+        setCandidates(null);
+        setPending(null);
+        setSummary(res.speech);
+        setSummaryEmoji(res.emoji);
+        speak(res.speech);
       } else {
         if (res.show) {
           setDisplay(res.show); // system command: show the task list
@@ -419,7 +635,7 @@ export default function App() {
       console.log(`[KAIROS] action ${res.tool} ok=${res.ok} :: ${res.speech}`);
     } catch (e: any) {
       setIntentJson("");
-      setSummary("Je n'ai pas compris.");
+      setSummary(L.notUnderstood);
       setSummaryEmoji("❓");
       addLog(`✗ intent: ${e?.message ?? e}`);
       console.log(`[KAIROS] intent error: ${e?.message ?? e}`);
@@ -432,11 +648,11 @@ export default function App() {
   const startListening = async () => {
     const perm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
     if (!perm.granted) {
-      addLog("✗ permission micro refusée");
+      addLog(`✗ ${L.micDenied}`);
       return;
     }
     ExpoSpeechRecognitionModule.start({
-      lang: LANG,
+      lang: STT_LANG[lang],
       interimResults: true,
       continuous: false,
       maxAlternatives: 1,
@@ -529,7 +745,7 @@ export default function App() {
     return set;
   })();
 
-  const folders = buildFolders(displayedTasks);
+  const folders = buildFolders(displayedTasks, L.miscFolder);
 
   // Mini agenda peek shown under the PTT button: the few soonest open tasks
   // (tasks is already sorted by due date). Grows as the user adds/updates tasks.
@@ -552,10 +768,7 @@ export default function App() {
     launchAlerted.current = true;
     if (overdue.length === 0) return;
     const n = overdue.length;
-    const msg =
-      n === 1
-        ? `Attention, une tâche est en retard : ${overdue[0].title}.`
-        : `Attention, vous avez ${n} tâches en retard.`;
+    const msg = n === 1 ? L.overdueOne(overdue[0].title) : L.overdueMany(n);
     setDisplay({
       scope: "overdue",
       category: null,
@@ -616,7 +829,7 @@ export default function App() {
       await deleteTaskById(t.id);
       setLastRevert({ kind: "reinsert", task: t });
       return {
-        speech: `Supprimé : ${t.title}. Dites « annule » pour récupérer.`,
+        speech: L.deletedUndo(t.title),
         emoji: "🗑️",
       };
     }
@@ -629,56 +842,36 @@ export default function App() {
         fields: { status: t.status, completed_at: t.completed_at },
       });
       return {
-        speech: `${t.title} : ${STATUS_LABEL[p.status]}.`,
+        speech: L.statusSet(t.title, L.statusLabel[p.status]),
         emoji: STATUS_EMOJI[p.status],
       };
     }
+    // "note" pendings are resolved inline in runIntent (capture / save / clear),
+    // never here — guard so TS narrows p to the "update" variant below.
+    if (p.kind !== "update") return { speech: "", emoji: "📝" };
     const t0 = t as any;
     const before: Record<string, unknown> = {};
     for (const k of Object.keys(p.changes)) before[k] = t0[k] ?? null;
     await updateTaskById(t.id, p.changes);
     setLastRevert({ kind: "update", id: t.id, fields: before });
     return {
-      speech: `${(p.changes as any).title ?? t.title} : mis à jour.`,
+      speech: L.updated((p.changes as any).title ?? t.title),
       emoji: "✏️",
     };
   };
 
-  const SCOPE_TITLE: Record<Scope, string> = {
-    all: "Toutes les tâches",
-    hours: "Prochaines heures",
-    day: "Aujourd'hui",
-    week: "Cette semaine",
-    month: "Ce mois",
-    overdue: "En retard",
-    reminder: "Rappel",
-  };
-
-  const STATUS_TITLE: Partial<Record<Task["status"], string>> = {
-    todo: "à faire",
-    pending: "en attente",
-    postponed: "à reporter",
-    done: "accomplies",
-    archived: "archivées",
-  };
-
   // Header reflecting every active display dimension, e.g.
-  // "En retard · urgent · avec Paul".
+  // "Overdue · urgent · with Paul". Titles/labels come from the active language.
   const displayTitle = (() => {
     if (display === null) return "";
-    const bits: string[] = [SCOPE_TITLE[display.scope]];
-    if (display.status) bits.push(STATUS_TITLE[display.status] ?? "");
-    if (display.urgent) bits.push("urgent");
-    if (display.category) bits.push(`pour ${display.category}`);
-    if (display.person) bits.push(`avec ${display.person}`);
-    if (display.place) bits.push(`à ${display.place}`);
+    const bits: string[] = [L.scopeTitle[display.scope]];
+    if (display.status) bits.push(L.statusTitle[display.status] ?? "");
+    if (display.urgent) bits.push(L.qualUrgent);
+    if (display.category) bits.push(L.qualFor(display.category));
+    if (display.person) bits.push(L.qualWith(display.person));
+    if (display.place) bits.push(L.qualAt(display.place));
     return bits.filter(Boolean).join(" · ");
   })();
-
-  const STATUS_BADGE: Partial<Record<Task["status"], string>> = {
-    pending: "en attente",
-    postponed: "à reporter",
-  };
 
   // The logo doubles as the push-to-talk button once the model is ready: hold
   // to listen. A colored halo appears while listening (green) or speaking (blue).
@@ -741,16 +934,14 @@ export default function App() {
             {modelStatus !== "error" && (
               <View style={styles.pctWrap}>
                 <Text style={styles.loadPct}>
-                  {loadPct >= 100 ? "Un instant SVP" : `${loadPct}%`}
+                  {loadPct >= 100 ? L.justAMoment : `${loadPct}%`}
                 </Text>
               </View>
             )}
           </View>
           {modelStatus === "error" && (
             <Pressable onPress={loadGemma} style={styles.errorBanner}>
-              <Text style={styles.errorText}>
-                Échec du chargement. Toucher pour réessayer.
-              </Text>
+              <Text style={styles.errorText}>{L.loadFailed}</Text>
             </Pressable>
           )}
         </View>
@@ -768,6 +959,7 @@ export default function App() {
         range={calendar.range}
         anchor={calendar.anchor}
         tasks={tasks}
+        lang={lang}
         onNavigate={(range, anchor) => setCalendar({ range, anchor })}
         renderTalk={renderTalk}
         onClose={() => setCalendar(null)}
@@ -794,9 +986,9 @@ export default function App() {
             ) : null}
             <Text style={styles.topNoteSummary} numberOfLines={2}>
               {status === "listening" && !processing
-                ? "À l'écoute…"
+                ? L.listeningShort
                 : processing
-                  ? "Compréhension en cours…"
+                  ? L.understanding
                   : summary}
             </Text>
           </View>
@@ -812,7 +1004,7 @@ export default function App() {
             keyboardShouldPersistTaps="handled"
           >
             <View style={styles.tasksHeaderRow}>
-              <Text style={styles.sectionTitle}>Laquelle ?</Text>
+              <Text style={styles.sectionTitle}>{L.whichOne}</Text>
               <Pressable
                 onPress={() => {
                   setCandidates(null);
@@ -820,14 +1012,21 @@ export default function App() {
                 }}
                 hitSlop={10}
               >
-                <Text style={styles.hideBtn}>✕ Annuler</Text>
+                <Text style={styles.hideBtn}>{L.cancelBtn}</Text>
               </Pressable>
             </View>
             <View style={styles.tasksBox}>
               {candidates.map((t) => (
                 <View key={t.id} style={styles.taskRow}>
                   <Text style={styles.taskNum}>{numberOf.get(t.id)}</Text>
-                  <Text style={styles.taskTitle}>{t.title}</Text>
+                  <View style={styles.taskMain}>
+                    <Text style={styles.taskTitle}>{t.title}</Text>
+                    {t.note ? (
+                      <Text style={styles.taskNote} numberOfLines={2}>
+                        📝 {t.note}
+                      </Text>
+                    ) : null}
+                  </View>
                   <Text style={styles.taskDue}>
                     {t.due_iso ? fmtWhen(t.due_iso) : (t.due ?? "")}
                   </Text>
@@ -844,7 +1043,7 @@ export default function App() {
           {renderTalk(LOGO_SIZE)}
           {upcoming.length > 0 && (
             <View style={styles.miniPlan}>
-              <Text style={styles.miniHeader}>À venir</Text>
+              <Text style={styles.miniHeader}>{L.upcoming}</Text>
               {upcoming.map((t) => (
                 <View key={t.id} style={styles.miniRow}>
                   <Text style={styles.miniNum}>{numberOf.get(t.id)}</Text>
@@ -854,6 +1053,7 @@ export default function App() {
                   <Text style={styles.miniTitle} numberOfLines={1}>
                     {t.title}
                   </Text>
+                  {t.note ? <Text style={styles.miniNoteMark}>📝</Text> : null}
                   <Text style={styles.miniDue}>
                     {t.due_iso ? fmtWhen(t.due_iso) : (t.due ?? "")}
                   </Text>
@@ -873,7 +1073,7 @@ export default function App() {
             <View style={styles.tasksHeaderRow}>
               <Text style={styles.sectionTitle}>{displayTitle}</Text>
               <Pressable onPress={() => setDisplay(null)} hitSlop={10}>
-                <Text style={styles.hideBtn}>✕ Masquer</Text>
+                <Text style={styles.hideBtn}>{L.hideBtn}</Text>
               </Pressable>
             </View>
 
@@ -881,8 +1081,8 @@ export default function App() {
               <View style={styles.tasksBox}>
                 <Text style={styles.taskEmpty}>
                   {display.scope === "overdue"
-                    ? "Rien en retard."
-                    : "Aucune tâche pour ces critères."}
+                    ? L.nothingOverdue
+                    : L.noTasksCriteria}
                 </Text>
               </View>
             ) : (
@@ -914,10 +1114,17 @@ export default function App() {
                             <Text style={styles.taskNum}>
                               {numberOf.get(t.id)}
                             </Text>
-                            <Text style={styles.taskTitle}>{t.title}</Text>
+                            <View style={styles.taskMain}>
+                              <Text style={styles.taskTitle}>{t.title}</Text>
+                              {t.note ? (
+                                <Text style={styles.taskNote} numberOfLines={3}>
+                                  📝 {t.note}
+                                </Text>
+                              ) : null}
+                            </View>
                             <Text style={styles.taskDue}>
-                              {STATUS_BADGE[t.status]
-                                ? STATUS_BADGE[t.status]
+                              {L.statusBadge[t.status]
+                                ? L.statusBadge[t.status]
                                 : t.due_iso
                                   ? fmtWhen(t.due_iso)
                                   : t.due ?? ""}
@@ -935,9 +1142,14 @@ export default function App() {
         </>
       )}
 
-      {/* Bottom bar: version (left) + TTS toggle + dev "Tester" chip (right). */}
+      {/* Bottom bar: FR/US language flags (left) + TTS toggle + dev "Tester"
+          chip (right). The flags switch the whole app's language: UI text, TTS
+          voice, STT recognizer and the Gemma prompt. */}
       <View style={styles.bottomBar}>
-        <Text style={styles.versionLabel}>Kairos version 0.3</Text>
+        <View style={styles.bottomLeft}>
+          <LangToggle lang={lang} onChange={setLang} />
+          <Text style={styles.versionLabel}>{L.versionLabel}</Text>
+        </View>
         <View style={styles.bottomRight}>
           <View style={styles.ttsToggle}>
             <Text style={styles.ttsLabel}>TTS</Text>
@@ -951,14 +1163,15 @@ export default function App() {
           </View>
           <Pressable
             onPress={() => {
-              const phrase = TEST_PHRASES[testIdx % TEST_PHRASES.length];
+              const phrases = TEST_PHRASES[lang];
+              const phrase = phrases[testIdx % phrases.length];
               setTestIdx((i) => i + 1);
               runIntent(phrase);
             }}
             style={styles.testChip}
             hitSlop={8}
           >
-            <Text style={styles.testChipText}>Tester</Text>
+            <Text style={styles.testChipText}>{L.testChip}</Text>
           </Pressable>
         </View>
       </View>
@@ -1011,6 +1224,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
+  bottomLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
   versionLabel: { fontSize: 13, fontWeight: "600", color: "#9aa0a6" },
   bottomRight: { flexDirection: "row", alignItems: "center", gap: 14 },
   ttsToggle: { flexDirection: "row", alignItems: "center", gap: 4 },
@@ -1071,6 +1285,7 @@ const styles = StyleSheet.create({
   },
   miniEmoji: { fontSize: 18 },
   miniTitle: { flex: 1, fontSize: 14, color: "#1a1a1a" },
+  miniNoteMark: { fontSize: 11, marginRight: 2 },
   miniDue: { fontSize: 12, color: "#2f6fed" },
   talkBtn: { alignItems: "center", justifyContent: "center" },
   talkPressed: { opacity: 0.85 },
@@ -1143,7 +1358,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#eee",
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: 10,
   },
   taskNum: {
@@ -1152,7 +1367,16 @@ const styles = StyleSheet.create({
     color: "#9aa0a6",
     minWidth: 18,
     fontVariant: ["tabular-nums"],
+    marginTop: 1,
   },
-  taskTitle: { flex: 1, fontSize: 16, color: "#1a1a1a" },
-  taskDue: { fontSize: 13, color: "#2f6fed" },
+  taskMain: { flex: 1 },
+  taskTitle: { fontSize: 16, color: "#1a1a1a" },
+  taskNote: {
+    fontSize: 13,
+    color: "#5a6472",
+    fontStyle: "italic",
+    marginTop: 3,
+    lineHeight: 18,
+  },
+  taskDue: { fontSize: 13, color: "#2f6fed", marginTop: 1 },
 });

@@ -19,6 +19,7 @@ export type Task = {
   subcategory: string | null; // level-2 sub-folder
   person: string | null; // WHO — associated person
   place: string | null; // WHERE — place / context
+  note: string | null; // free-form textual note, dictated vocally
   created_at: number;
   completed_at: number | null;
 };
@@ -39,6 +40,7 @@ const UPDATABLE = new Set([
   "subcategory",
   "person",
   "place",
+  "note",
   "status",
   "completed_at",
 ]);
@@ -78,6 +80,7 @@ export async function initDb(): Promise<void> {
     "due_iso TEXT",
     "person TEXT",
     "place TEXT",
+    "note TEXT",
   ]) {
     try {
       await db.execAsync(`ALTER TABLE task ADD COLUMN ${col}`);
@@ -101,10 +104,11 @@ export async function createTask(input: {
   subcategory?: string | null;
   person?: string | null;
   place?: string | null;
+  note?: string | null;
 }): Promise<Task> {
   const now = Date.now();
   const res = await requireDb().runAsync(
-    "INSERT INTO task (title, status, due, due_iso, priority, category, subcategory, person, place, created_at) VALUES (?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO task (title, status, due, due_iso, priority, category, subcategory, person, place, note, created_at) VALUES (?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     input.title,
     input.due ?? null,
     input.dueIso ?? null,
@@ -113,6 +117,7 @@ export async function createTask(input: {
     input.subcategory ?? null,
     input.person ?? null,
     input.place ?? null,
+    input.note ?? null,
     now,
   );
   return {
@@ -126,6 +131,7 @@ export async function createTask(input: {
     subcategory: input.subcategory ?? null,
     person: input.person ?? null,
     place: input.place ?? null,
+    note: input.note ?? null,
     created_at: now,
     completed_at: null,
   };
@@ -236,7 +242,7 @@ export async function deleteTaskById(id: number): Promise<void> {
 
 export async function insertFullTask(t: Task): Promise<void> {
   await requireDb().runAsync(
-    "INSERT INTO task (id,title,status,due,due_iso,priority,category,subcategory,person,place,created_at,completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+    "INSERT INTO task (id,title,status,due,due_iso,priority,category,subcategory,person,place,note,created_at,completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
     t.id,
     t.title,
     t.status,
@@ -247,6 +253,7 @@ export async function insertFullTask(t: Task): Promise<void> {
     t.subcategory,
     t.person,
     t.place,
+    t.note,
     t.created_at,
     t.completed_at,
   );

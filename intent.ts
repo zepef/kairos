@@ -10,6 +10,7 @@ import {
   type Task,
   type TaskStatus,
 } from "./db";
+import { tr, type Lang } from "./i18n";
 
 // Hermes returns NaN for ISO without seconds — parse from parts (cf. App.tsx).
 // Used to resolve a task's due date when clearing a whole day.
@@ -58,7 +59,11 @@ export type CalRange = "day" | "week" | "month" | "year";
 export type PendingAction =
   | { kind: "update"; changes: Record<string, unknown> }
   | { kind: "delete" }
-  | { kind: "status"; status: TaskStatus };
+  | { kind: "status"; status: TaskStatus }
+  // Attach a note: if `note` is already known (dictated inline) save it; else the
+  // app enters note-capture and the next utterance becomes the note verbatim.
+  // append=true concatenates to the existing note instead of replacing it.
+  | { kind: "note"; note?: string; append?: boolean };
 
 export type DispatchResult = {
   ok: boolean;
@@ -72,7 +77,26 @@ export type DispatchResult = {
   calendar?: CalRange; // system command: open a graphical calendar (landscape)
   calendarZoom?: "in" | "out"; // relative zoom of the open calendar (in = more
   // detail, year→month→week→day ; out = wider, day→week→month→year)
+  noteCapture?: {
+    taskId: number;
+    title: string;
+    prevNote: string | null;
+    append: boolean; // true = concat to prevNote, false = replace
+  };
+  // ask the user to dictate a note for this task (next utterance = the note)
+  noteChoice?: { taskId: number; title: string; prevNote: string | null };
+  // ambiguous note edit: ask whether to replace / append / erase (next utterance
+  // picks the operation, App resolves it)
 };
+
+// Pull a dictated note out of the model's object (several possible keys), or ""
+// if none was provided in this utterance.
+function noteText(obj: any): string {
+  for (const k of ["note", "content", "text", "body", "message"]) {
+    if (typeof obj?.[k] === "string" && obj[k].trim()) return obj[k].trim();
+  }
+  return "";
+}
 
 function toCalRange(raw: unknown): CalRange {
   const s = String(raw ?? "").toLowerCase();
@@ -91,12 +115,8 @@ function toZoomDir(raw: unknown): "in" | "out" {
   return "in";
 }
 
-export const CAL_LABEL: Record<CalRange, string> = {
-  day: "quotidien",
-  week: "hebdomadaire",
-  month: "mensuel",
-  year: "annuel",
-};
+// Calendar level labels (quotidien / hebdomadaire / …) now live per-language in
+// i18n (tr(lang).calLabel) so the spoken confirmation follows the UI language.
 
 // Pick an emoji that symbolizes the task from its category/title.
 export function taskEmoji(category: string | null, title: string): string {
@@ -129,13 +149,8 @@ function normalizeCategory(raw: unknown): string | null {
   return c.charAt(0).toUpperCase() + c.slice(1);
 }
 
-export const STATUS_LABEL: Record<TaskStatus, string> = {
-  todo: "à faire",
-  pending: "en attente",
-  done: "accomplie",
-  postponed: "à reporter",
-  archived: "archivée",
-};
+// Spoken status labels (à faire / accomplie / …) now live per-language in i18n
+// (tr(lang).statusLabel); STATUS_EMOJI above stays here (language-independent).
 
 // Map free-form status (LLM or French words) to a canonical TaskStatus.
 function toStatus(raw: unknown): TaskStatus | null {
@@ -161,15 +176,7 @@ function toScope(raw: unknown): Scope {
   return "all";
 }
 
-const SCOPE_LABEL: Record<Scope, string> = {
-  all: "toutes les tâches",
-  hours: "les tâches des prochaines heures",
-  day: "les tâches du jour",
-  week: "les tâches de la semaine",
-  month: "les tâches du mois",
-  overdue: "les tâches en retard",
-  reminder: "le rappel des tâches à venir et en retard",
-};
+// Spoken scope labels now live per-language in i18n (tr(lang).scopeLabel).
 
 // Build the set of column changes for updateTask from the model's "changes".
 function buildChanges(obj: any): Record<string, unknown> {
@@ -197,15 +204,14 @@ function refNumber(ref: unknown, transcript: string): number | null {
     if (direct) return +direct[1];
   }
   const t = (transcript || "").toLowerCase();
-  const m = t.match(/(?:tâche|tache|num[ée]ro|n°|no|la|le|l['’])\s*(\d{1,2})\b/);
+  const m = t.match(/(?:tâche|tache|task|num[ée]ro|number|n°|no|the|la|le|l['’])\s*(\d{1,2})\b/);
   if (m) return +m[1];
   const ord: [string, number][] = [
-    ["premi", 1],
-    ["deuxi", 2],
-    ["second", 2],
-    ["troisi", 3],
-    ["quatri", 4],
-    ["cinqui", 5],
+    ["premi", 1], ["first", 1],
+    ["deuxi", 2], ["second", 2],
+    ["troisi", 3], ["third", 3],
+    ["quatri", 4], ["fourth", 4],
+    ["cinqui", 5], ["fifth", 5],
   ];
   for (const [w, n] of ord) if (t.includes(w)) return n;
   return null;
@@ -231,7 +237,9 @@ export async function dispatch(
   jsonStr: string,
   transcript: string,
   numberedIds: number[] = [],
+  lang: Lang = "fr",
 ): Promise<DispatchResult> {
+  const L = tr(lang);
   let obj: any;
   try {
     obj = JSON.parse(jsonStr);
@@ -245,7 +253,7 @@ export async function dispatch(
     return {
       ok: false,
       tool: "parse_error",
-      speech: "Je n'ai pas bien compris.",
+      speech: L.parseError,
       emoji: "❓",
     };
   }
@@ -257,7 +265,7 @@ export async function dispatch(
         out = {
           ok: false,
           tool: obj.tool,
-          speech: "Quelle tâche dois-je ajouter ?",
+          speech: L.whichTaskToAdd,
           emoji: "❓",
         };
         break;
@@ -278,7 +286,7 @@ export async function dispatch(
       out = {
         ok: true,
         tool: "createTask",
-        speech: `Tâche ajoutée${where ? ` dans ${where}` : ""} : ${obj.title}${obj.due ? `, ${obj.due}` : ""}.`,
+        speech: L.taskAdded(where, obj.title, obj.due ?? ""),
         emoji: taskEmoji(category, obj.title),
         revert: { kind: "delete", id: created.id },
       };
@@ -296,7 +304,7 @@ export async function dispatch(
         out = {
           ok: true,
           tool: "setStatus",
-          speech: `${task.title} : ${STATUS_LABEL[status]}.`,
+          speech: L.statusSet(task.title, L.statusLabel[status]),
           emoji: STATUS_EMOJI[status],
           revert: {
             kind: "update",
@@ -308,14 +316,14 @@ export async function dispatch(
         out = {
           ok: false,
           tool: "setStatus",
-          speech: "Je n'ai pas trouvé cette tâche.",
+          speech: L.taskNotFound,
           emoji: "❓",
         };
       } else {
         out = {
           ok: true,
           tool: "setStatus",
-          speech: "Plusieurs tâches correspondent. Laquelle ?",
+          speech: L.severalWhich,
           emoji: STATUS_EMOJI[status],
           candidates,
           pending: { kind: "status", status },
@@ -331,7 +339,7 @@ export async function dispatch(
         out = {
           ok: false,
           tool: "updateTask",
-          speech: "Que dois-je modifier ?",
+          speech: L.whatToModify,
           emoji: "❓",
         };
         break;
@@ -345,7 +353,7 @@ export async function dispatch(
         out = {
           ok: true,
           tool: "updateTask",
-          speech: `${(changes.title as string) ?? task.title} : mis à jour.`,
+          speech: L.updated((changes.title as string) ?? task.title),
           emoji: "✏️",
           revert: { kind: "update", id: task.id, fields: before },
         };
@@ -353,14 +361,14 @@ export async function dispatch(
         out = {
           ok: false,
           tool: "updateTask",
-          speech: "Je n'ai pas trouvé cette tâche.",
+          speech: L.taskNotFound,
           emoji: "❓",
         };
       } else {
         out = {
           ok: true,
           tool: "updateTask",
-          speech: "Plusieurs tâches correspondent. Laquelle modifier ?",
+          speech: L.severalWhichModify,
           emoji: "✏️",
           candidates,
           pending: { kind: "update", changes },
@@ -377,7 +385,7 @@ export async function dispatch(
         out = {
           ok: true,
           tool: "deleteTask",
-          speech: `Supprimé : ${task.title}. Dites « annule » pour récupérer.`,
+          speech: L.deletedUndo(task.title),
           emoji: "🗑️",
           revert: { kind: "reinsert", task },
         };
@@ -385,14 +393,14 @@ export async function dispatch(
         out = {
           ok: false,
           tool: "deleteTask",
-          speech: "Je n'ai pas trouvé cette tâche.",
+          speech: L.taskNotFound,
           emoji: "❓",
         };
       } else {
         out = {
           ok: true,
           tool: "deleteTask",
-          speech: "Plusieurs tâches correspondent. Laquelle supprimer ?",
+          speech: L.severalWhichDelete,
           emoji: "🗑️",
           candidates,
           pending: { kind: "delete" },
@@ -440,7 +448,7 @@ export async function dispatch(
         out = {
           ok: false,
           tool: "deleteTasks",
-          speech: "Je n'ai trouvé aucune tâche à supprimer.",
+          speech: L.noTaskToDelete,
           emoji: "❓",
         };
         break;
@@ -450,10 +458,242 @@ export async function dispatch(
       out = {
         ok: true,
         tool: "deleteTasks",
-        speech: `${n} tâche${n > 1 ? "s" : ""} supprimée${n > 1 ? "s" : ""}. Dites « annule » pour tout récupérer.`,
+        speech: L.manyDeletedUndo(n),
         emoji: "🗑️",
         revert: { kind: "reinsertMany", tasks: targets },
       };
+      break;
+    }
+    // Attach a textual note to a task. The note is dictated: either inline in
+    // this same sentence ("note sur la 2 : apporter le dossier") or, if no text
+    // is given, the app asks for it and captures the next utterance verbatim
+    // (noteCapture) so Gemma doesn't try to parse the note as a command.
+    case "addNote":
+    case "setNote":
+    case "note":
+    case "annotate": {
+      const note = noteText(obj);
+      const { task, candidates } = await resolveTarget(obj, transcript, numberedIds);
+      if (task) {
+        if (note) {
+          await updateTaskById(task.id, { note });
+          out = {
+            ok: true,
+            tool: "addNote",
+            speech: L.noteAdded(task.title),
+            emoji: "📝",
+            revert: { kind: "update", id: task.id, fields: { note: task.note } },
+          };
+        } else {
+          // No text yet — hand control to App to capture the dictated note.
+          out = {
+            ok: true,
+            tool: "addNote",
+            speech: L.whichNote(task.title),
+            emoji: "📝",
+            noteCapture: {
+              taskId: task.id,
+              title: task.title,
+              prevNote: task.note,
+              append: false,
+            },
+          };
+        }
+      } else if (candidates.length === 0) {
+        out = {
+          ok: false,
+          tool: "addNote",
+          speech: L.taskNotFound,
+          emoji: "❓",
+        };
+      } else {
+        out = {
+          ok: true,
+          tool: "addNote",
+          speech: L.severalWhichNote,
+          emoji: "📝",
+          candidates,
+          pending: { kind: "note", note: note || undefined, append: false },
+        };
+      }
+      break;
+    }
+    // Append to a task's existing note instead of replacing it ("complète la
+    // note de la 2 : …"). Same two paths as addNote: inline text concatenates
+    // now, no text -> capture the next utterance and concat it. Reversible.
+    case "appendNote":
+    case "addToNote":
+    case "completeNote":
+    case "complementNote": {
+      const note = noteText(obj);
+      const { task, candidates } = await resolveTarget(obj, transcript, numberedIds);
+      if (task) {
+        if (note) {
+          const merged = task.note ? `${task.note} ${note}` : note;
+          await updateTaskById(task.id, { note: merged });
+          out = {
+            ok: true,
+            tool: "appendNote",
+            speech: L.noteCompleted(task.title),
+            emoji: "📝",
+            revert: { kind: "update", id: task.id, fields: { note: task.note } },
+          };
+        } else {
+          out = {
+            ok: true,
+            tool: "appendNote",
+            speech: L.whatToAddToNote(task.title),
+            emoji: "📝",
+            noteCapture: {
+              taskId: task.id,
+              title: task.title,
+              prevNote: task.note,
+              append: true,
+            },
+          };
+        }
+      } else if (candidates.length === 0) {
+        out = {
+          ok: false,
+          tool: "appendNote",
+          speech: L.taskNotFound,
+          emoji: "❓",
+        };
+      } else {
+        out = {
+          ok: true,
+          tool: "appendNote",
+          speech: L.severalWhichAppend,
+          emoji: "📝",
+          candidates,
+          pending: { kind: "note", note: note || undefined, append: true },
+        };
+      }
+      break;
+    }
+    // Ambiguous "modify the note": don't guess (replacing/erasing silently lost
+    // the note before) — ask whether to edit (replace), append, or erase. App
+    // captures the answer (noteChoice) and routes to the right operation.
+    case "editNote":
+    case "modifyNote":
+    case "changeNote":
+    case "updateNote": {
+      const { task, candidates } = await resolveTarget(obj, transcript, numberedIds);
+      if (task) {
+        out = task.note
+          ? {
+              ok: true,
+              tool: "editNote",
+              speech: L.editNotePrompt(task.title, task.note),
+              emoji: "📝",
+              noteChoice: { taskId: task.id, title: task.title, prevNote: task.note },
+            }
+          : {
+              // No note yet: nothing to modify — start a fresh dictation.
+              ok: true,
+              tool: "editNote",
+              speech: L.noNoteAskAdd(task.title),
+              emoji: "📝",
+              noteCapture: {
+                taskId: task.id,
+                title: task.title,
+                prevNote: null,
+                append: false,
+              },
+            };
+      } else if (candidates.length === 0) {
+        out = {
+          ok: false,
+          tool: "editNote",
+          speech: L.taskNotFound,
+          emoji: "❓",
+        };
+      } else {
+        out = {
+          ok: false,
+          tool: "editNote",
+          speech: L.whichTaskEditNote,
+          emoji: "📝",
+        };
+      }
+      break;
+    }
+    // Read a task's note aloud.
+    case "readNote":
+    case "showNote":
+    case "getNote": {
+      const { task, candidates } = await resolveTarget(obj, transcript, numberedIds);
+      if (task) {
+        out = task.note
+          ? {
+              ok: true,
+              tool: "readNote",
+              speech: L.readNoteSpeech(task.title, task.note),
+              emoji: "📖",
+            }
+          : {
+              ok: true,
+              tool: "readNote",
+              speech: L.noNote(task.title),
+              emoji: "📖",
+            };
+      } else if (candidates.length === 0) {
+        out = {
+          ok: false,
+          tool: "readNote",
+          speech: L.taskNotFound,
+          emoji: "❓",
+        };
+      } else {
+        out = {
+          ok: false,
+          tool: "readNote",
+          speech: L.whichTaskReadNote,
+          emoji: "📖",
+        };
+      }
+      break;
+    }
+    // Remove a task's note (reversible via "annule").
+    case "clearNote":
+    case "removeNote":
+    case "deleteNote": {
+      const { task, candidates } = await resolveTarget(obj, transcript, numberedIds);
+      if (task) {
+        if (task.note) {
+          await updateTaskById(task.id, { note: null });
+          out = {
+            ok: true,
+            tool: "clearNote",
+            speech: L.noteRemoved(task.title),
+            emoji: "🗑️",
+            revert: { kind: "update", id: task.id, fields: { note: task.note } },
+          };
+        } else {
+          out = {
+            ok: true,
+            tool: "clearNote",
+            speech: L.noNote(task.title),
+            emoji: "📝",
+          };
+        }
+      } else if (candidates.length === 0) {
+        out = {
+          ok: false,
+          tool: "clearNote",
+          speech: L.taskNotFound,
+          emoji: "❓",
+        };
+      } else {
+        out = {
+          ok: true,
+          tool: "clearNote",
+          speech: L.severalWhich,
+          emoji: "🗑️",
+          candidates,
+          pending: { kind: "note", note: "" },
+        };
+      }
       break;
     }
     // Undo the last mutation — App holds the revert and performs it.
@@ -474,15 +714,15 @@ export async function dispatch(
       const urgent = obj.urgent === true;
       // Spoken confirmation built from the active dimensions.
       const quals: string[] = [];
-      if (status) quals.push(STATUS_LABEL[status]);
-      if (urgent) quals.push("urgentes");
-      if (category) quals.push(`pour ${category}`);
-      if (person) quals.push(`avec ${person}`);
-      if (place) quals.push(`à ${place}`);
+      if (status) quals.push(L.statusLabel[status]);
+      if (urgent) quals.push(L.spokenUrgent);
+      if (category) quals.push(L.spokenFor(category));
+      if (person) quals.push(L.spokenWith(person));
+      if (place) quals.push(L.spokenAt(place));
       out = {
         ok: true,
         tool: "showTasks",
-        speech: `Voici ${SCOPE_LABEL[scope]}${quals.length ? " " + quals.join(", ") : ""}.`,
+        speech: L.showTasksSpeech(L.scopeLabel[scope], quals),
         show: { scope, category, person, place, status, urgent },
         emoji: scope === "overdue" ? "⏰" : scope === "reminder" ? "🔔" : "📋",
       };
@@ -495,7 +735,7 @@ export async function dispatch(
       out = {
         ok: true,
         tool: "showCalendar",
-        speech: `Voici le calendrier ${CAL_LABEL[cal]}.`,
+        speech: L.calendarShown(L.calLabel[cal]),
         emoji: "🗓️",
         calendar: cal,
       };
@@ -509,7 +749,7 @@ export async function dispatch(
       out = {
         ok: true,
         tool: "zoomCalendar",
-        speech: dir === "out" ? "Je dézoome." : "Je zoome.",
+        speech: dir === "out" ? L.zoomOut : L.zoomIn,
         emoji: "🔍",
         calendarZoom: dir,
       };
@@ -519,7 +759,7 @@ export async function dispatch(
       out = {
         ok: false,
         tool: obj.tool ?? "unknown",
-        speech: "Je n'ai pas compris la demande.",
+        speech: L.notUnderstoodRequest,
         emoji: "❓",
       };
   }

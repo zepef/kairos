@@ -29,6 +29,7 @@ La seule chose que l'utilisateur crée. Tout le reste (dossiers, vues) en dériv
 | `subcategory` | **sous-dossier** (niveau 2, optionnel) |
 | `person` | **QUI** — personne associée (« avec Paul », « le dentiste ») |
 | `place` | **OÙ** — lieu / contexte (« au bureau », « à la maison ») |
+| `note` | **note textuelle libre**, dictée vocalement (un complément en clair attaché à la tâche : « apporter le dossier bleu ») |
 | `status` | état dans le cycle de vie (voir §3) — **ÉTAT** |
 | `created_at` / `completed_at` | horodatage |
 
@@ -80,7 +81,11 @@ Toute parole tombe dans une **intention** (`tool`). Trois familles :
 - **Changer le statut** (`setStatus`) → done / pending / postponed / archived / todo (cas particulier d'Update, verbe distinct).
 - **Supprimer** (`deleteTask`) → suppression réelle d'**une** tâche, mais **réversible** via « annule ».
 - **Supprimer en groupe** (`deleteTasks`) → supprime **plusieurs** tâches d'un coup : soit une liste de **numéros** affichés (« supprime les 1, 3 et 5 »), soit **toutes les tâches d'une journée** (« efface toutes les tâches de lundi » → `dayISO`). Réversible **en bloc** par un seul « annule ».
-- **Annuler** (`undo`, « annule ») → défait la dernière mutation (create/update/status/delete/deleteTasks). Rend tout réversible d'un mot, y compris une suppression de groupe restaurée d'un coup.
+- **Annoter** (`addNote`) → attache / **remplace** une **note textuelle libre** sur une tâche. La note est **dictée** : soit dans la même phrase (« note sur la 2 : apporter le dossier bleu »), soit en deux temps (« ajoute une note à la tâche 2 » → l'app demande « Quelle note ? » et **capte la phrase suivante telle quelle**, sans la repasser à Gemma, pour qu'une note longue ne soit pas interprétée comme une commande). Réversible.
+- **Compléter la note** (`appendNote`) → **ajoute à la suite** de la note existante au lieu de la remplacer (« complète la note de la 2 : et prévoir le parking »), inline ou en deux temps. Si aucune note n'existait, elle est créée. Réversible.
+- **Lire la note** (`readNote`) → relit à voix haute la note d'une tâche (« lis la note de la 2 »).
+- **Effacer la note** (`clearNote`) → retire la note d'une tâche (réversible).
+- **Annuler** (`undo`, « annule ») → défait la dernière mutation (create/update/status/delete/deleteTasks/addNote/appendNote/clearNote). Rend tout réversible d'un mot, y compris une suppression de groupe restaurée d'un coup.
 
 **Référence à une tâche & désambiguïsation.** Les commandes ci-dessus visent UNE tâche. Tout ce qui est affiché (mini-agenda d'accueil, liste, candidats) est **numéroté** : la façon la plus sûre de désigner une tâche est son **numéro** (« supprime la 2 », « la 3 est faite », « modifie la 1 »). À défaut, on résout par mots-clés du titre :
 - 0 correspondance → l'app le dit ;
@@ -145,9 +150,14 @@ Gemma est le **traducteur d'ontologie** : il fait correspondre une formulation l
 | « rappelle-moi ce qui arrive et ce qui est en retard » | `showTasks` | `scope:reminder` |
 | « affiche le calendrier [du jour / hebdomadaire / mensuel / annuel] » | `showCalendar` | `range` = day/week/month/year (paysage) |
 | « zoome / zoom avant », « dézoome / zoom arrière » | `zoomCalendar` | `in` (plus de détail) / `out` (plus large) sur le calendrier ouvert |
-| « reporte la 2 à mardi 15h », « renomme la 1 en… », « range X dans Santé » | `updateTask` | `changes` partiels ; référence par **numéro** |
+| « reporte la 2 à mardi 15h », « renomme la 1 en… » | `updateTask` | `changes` partiels ; référence par **numéro** |
+| « range / **déplace** / bouge / transfère / classe la 2 dans (vers) Santé » | `updateTask` | `changes.category` (+ `subcategory`) — déplacement entre dossiers |
 | « supprime la 3 », « efface X » | `deleteTask` | UNE tâche ; réversible via « annule » |
 | « supprime les tâches 1, 3 et 5 », « efface toutes les tâches de lundi / d'aujourd'hui » | `deleteTasks` | plusieurs (par `numbers`) ou toute une journée (`dayISO`) ; réversible en bloc |
+| « ajoute une note à la 2 », « note sur la 3 : apporter le dossier », « remplace la note de la 1 » | `addNote` | note dictée inline (`note`) ou en deux temps (capture de la phrase suivante) ; **remplace** ; référence par **numéro** |
+| « complète la note de la 2 : et prévoir le parking », « ajoute aussi à la note » | `appendNote` | **concatène** à la note existante (sinon la crée) |
+| « lis la note de la 2 », « quelle est la note de la 1 » | `readNote` | relit la note à voix haute |
+| « supprime / efface la note de la 3 » | `clearNote` | retire la note (réversible) |
 | « annule », « reviens en arrière » | `undo` | défait la dernière mutation |
 
 ---

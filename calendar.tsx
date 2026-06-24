@@ -1,5 +1,6 @@
-import { type ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import {
+  PanResponder,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -9,6 +10,7 @@ import {
 } from "react-native";
 import { taskEmoji, type CalRange } from "./intent";
 import type { Task } from "./db";
+import { tr, DATE_LOCALE, type Lang, type Strings } from "./i18n";
 
 // Hermes returns NaN for ISO without seconds — parse from parts (cf. App.tsx).
 function parseIso(iso: string | null): number {
@@ -27,35 +29,10 @@ function parseIso(iso: string | null): number {
   ).getTime();
 }
 
-const DAYS = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"];
-const MONTHS = [
-  "Janvier",
-  "Février",
-  "Mars",
-  "Avril",
-  "Mai",
-  "Juin",
-  "Juillet",
-  "Août",
-  "Septembre",
-  "Octobre",
-  "Novembre",
-  "Décembre",
-];
-const MONTHS_SHORT = [
-  "Janv",
-  "Févr",
-  "Mars",
-  "Avr",
-  "Mai",
-  "Juin",
-  "Juil",
-  "Août",
-  "Sept",
-  "Oct",
-  "Nov",
-  "Déc",
-];
+// Day/month names + all calendar labels are localized via the active language's
+// strings table (tr(lang)), threaded down as the `L` prop. Calendar is landscape
+// and full-screen, so the language flag lives on the home screen; the chosen
+// language is passed in here.
 
 const sameDay = (a: Date, b: Date) =>
   a.getFullYear() === b.getFullYear() &&
@@ -71,11 +48,11 @@ const startOfDay = (d: Date) =>
 
 const open = (t: Task) => t.status !== "done" && t.status !== "archived";
 
-function Chip({ t }: { t: Task }) {
+function Chip({ t, locale }: { t: Task; locale: string }) {
   const ms = parseIso(t.due_iso);
   const time = Number.isNaN(ms)
     ? ""
-    : new Date(ms).toLocaleTimeString("fr-FR", {
+    : new Date(ms).toLocaleTimeString(locale, {
         hour: "2-digit",
         minute: "2-digit",
       });
@@ -94,16 +71,22 @@ type Dated = { t: Task; ms: number };
 // The four zoom levels, narrowest → widest. Zooming "in" goes left (more
 // detail: year→month→week→day), "out" goes right (wider: day→week→month→year).
 const LEVELS: CalRange[] = ["day", "week", "month", "year"];
-const LEVEL_LABEL: Record<CalRange, string> = {
-  day: "Jour",
-  week: "Semaine",
-  month: "Mois",
-  year: "Année",
-};
 const widerOf = (r: CalRange): CalRange =>
   LEVELS[Math.min(LEVELS.length - 1, LEVELS.indexOf(r) + 1)];
 const narrowerOf = (r: CalRange): CalRange =>
   LEVELS[Math.max(0, LEVELS.indexOf(r) - 1)];
+
+// Shift the anchor by one period at the current zoom level. dir +1 = next
+// (swipe left), -1 = previous (swipe right). Drives the swipe navigation in
+// week/month/year so the user pages through time without leaving the view.
+function shiftAnchor(range: CalRange, anchor: Date, dir: number): Date {
+  const d = new Date(anchor);
+  if (range === "day") d.setDate(d.getDate() + dir);
+  else if (range === "week") d.setDate(d.getDate() + 7 * dir);
+  else if (range === "month") d.setMonth(d.getMonth() + dir);
+  else d.setFullYear(d.getFullYear() + dir);
+  return d;
+}
 
 // Controlled view: the current zoom level (range) and the date it is anchored
 // on both live in App (single source of truth), so zoom works identically from
@@ -115,6 +98,7 @@ export default function CalendarView({
   range,
   anchor,
   tasks,
+  lang,
   onNavigate,
   onClose,
   renderTalk,
@@ -122,12 +106,15 @@ export default function CalendarView({
   range: CalRange;
   anchor: Date;
   tasks: Task[];
+  lang: Lang;
   onNavigate: (range: CalRange, anchor: Date) => void;
   onClose: () => void;
   renderTalk?: (size: number) => ReactNode;
 }) {
   const { width, height } = useWindowDimensions();
   const now = new Date();
+  const L = tr(lang);
+  const locale = DATE_LOCALE[lang];
 
   const dated = tasks
     .filter(open)
@@ -141,26 +128,38 @@ export default function CalendarView({
     return s;
   })();
   const titles: Record<CalRange, string> = {
-    day: `${DAYS[wd(a)].toLowerCase()} ${a.getDate()} ${MONTHS[a.getMonth()].toLowerCase()}`,
-    week: `Semaine du ${weekStart.getDate()} ${MONTHS_SHORT[weekStart.getMonth()].toLowerCase()}`,
-    month: `${MONTHS[a.getMonth()]} ${a.getFullYear()}`,
+    day: L.dayTitle(L.days[wd(a)], a.getDate(), L.months[a.getMonth()]),
+    week: L.weekTitle(weekStart.getDate(), L.monthsShort[weekStart.getMonth()]),
+    month: L.monthTitle(L.months[a.getMonth()], a.getFullYear()),
     year: `${a.getFullYear()}`,
   };
+
+  // Swipe left/right pages one period at the current level (week/month/year):
+  // claim only clearly-horizontal gestures so the inner vertical ScrollViews
+  // keep working, and never on day (its hour strip scrolls horizontally).
+  const pan = useMemo(
+    () =>
+      PanResponder.create({
+        // Capture so a clearly-horizontal swipe is stolen from the inner
+        // vertical ScrollView of month/year (which otherwise grabs it first);
+        // the |dx|>|dy| gate keeps vertical scrolling working.
+        onMoveShouldSetPanResponderCapture: (_e, g) =>
+          range !== "day" &&
+          Math.abs(g.dx) > 24 &&
+          Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
+        onPanResponderRelease: (_e, g) => {
+          if (Math.abs(g.dx) < 40) return;
+          const dir = g.dx < 0 ? 1 : -1;
+          onNavigate(range, shiftAnchor(range, a, dir));
+        },
+      }),
+    [range, a, onNavigate],
+  );
 
   return (
     <View style={styles.root}>
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          {/* Zoom out: widen the window (day→week→month→year), same anchor. */}
-          {range !== "year" && (
-            <Pressable
-              onPress={() => onNavigate(widerOf(range), a)}
-              hitSlop={12}
-              style={styles.zoomBtn}
-            >
-              <Text style={styles.zoomLabel}>－ {LEVEL_LABEL[widerOf(range)]}</Text>
-            </Pressable>
-          )}
           <Text style={styles.title}>🗓️ {titles[range]}</Text>
           {/* Zoom in: more detail (year→month→week→day), same anchor. */}
           {range !== "day" && (
@@ -169,41 +168,70 @@ export default function CalendarView({
               hitSlop={12}
               style={styles.zoomBtn}
             >
-              <Text style={styles.zoomLabel}>{LEVEL_LABEL[narrowerOf(range)]} ＋</Text>
+              <Text style={styles.zoomLabel}>{L.levelLabel[narrowerOf(range)]} ＋</Text>
             </Pressable>
           )}
         </View>
-        <Pressable onPress={onClose} hitSlop={12}>
-          <Text style={styles.close}>✕ Fermer</Text>
-        </Pressable>
+        <View style={styles.headerRight}>
+          {/* Zoom out: widen the window (day→week→month→year), same anchor.
+              Sits left of Fermer so the Android nav bar never clips it. */}
+          {range !== "year" && (
+            <Pressable
+              onPress={() => onNavigate(widerOf(range), a)}
+              hitSlop={12}
+              style={styles.zoomBtn}
+            >
+              <Text style={styles.zoomLabel}>－ {L.levelLabel[widerOf(range)]}</Text>
+            </Pressable>
+          )}
+          <Pressable onPress={onClose} hitSlop={12}>
+            <Text style={styles.close}>{L.calClose}</Text>
+          </Pressable>
+        </View>
       </View>
-      {range === "day" && <DayView day={a} now={now} dated={dated} />}
-      {range === "week" && (
-        <WeekView
-          start={weekStart}
-          now={now}
-          dated={dated}
-          onPickDay={(d) => onNavigate("day", d)}
-        />
-      )}
-      {range === "month" && (
-        <MonthView
-          month={a}
-          now={now}
-          dated={dated}
-          w={width}
-          onPickDay={(d) => onNavigate("day", d)}
-        />
-      )}
-      {range === "year" && (
-        <YearView
-          year={a.getFullYear()}
-          now={now}
-          dated={dated}
-          h={height}
-          onPickMonth={(d) => onNavigate("month", d)}
-          onPickDay={(d) => onNavigate("day", d)}
-        />
+      {/* Day view owns a horizontal hour strip (ScrollView) that the user scrolls
+          to browse earlier/later hours, so it must NOT sit under the swipe-paging
+          PanResponder — a capture responder on the parent can swallow the first
+          move of a real touch and make scrolling back feel broken. Render it bare;
+          week/month/year keep the pan handlers for previous/next-period swipes. */}
+      {range === "day" ? (
+        <View style={styles.body}>
+          <DayView day={a} now={now} dated={dated} L={L} locale={locale} />
+        </View>
+      ) : (
+        <View style={styles.body} {...pan.panHandlers}>
+          {range === "week" && (
+            <WeekView
+              start={weekStart}
+              now={now}
+              dated={dated}
+              L={L}
+              locale={locale}
+              onPickDay={(d) => onNavigate("day", d)}
+            />
+          )}
+          {range === "month" && (
+            <MonthView
+              month={a}
+              now={now}
+              dated={dated}
+              w={width}
+              L={L}
+              onPickDay={(d) => onNavigate("day", d)}
+            />
+          )}
+          {range === "year" && (
+            <YearView
+              year={a.getFullYear()}
+              now={now}
+              dated={dated}
+              h={height}
+              L={L}
+              onPickMonth={(d) => onNavigate("month", d)}
+              onPickDay={(d) => onNavigate("day", d)}
+            />
+          )}
+        </View>
       )}
       {/* Push-to-talk dock: the calendar is full-screen, so the app's mic lives
           here too — hold to speak "zoom avant/arrière", "calendrier mensuel"… */}
@@ -220,10 +248,14 @@ function DayView({
   day,
   now,
   dated,
+  L,
+  locale,
 }: {
   day: Date;
   now: Date;
   dated: Dated[];
+  L: Strings;
+  locale: string;
 }) {
   const HSTART = 7;
   const HEND = 22;
@@ -233,10 +265,10 @@ function DayView({
     const items = items0.filter((x) => new Date(x.ms).getHours() === h);
     hours.push(
       <View key={h} style={styles.hourCol}>
-        <Text style={styles.hourLabel}>{String(h).padStart(2, "0")}h</Text>
+        <Text style={styles.hourLabel}>{L.hourLabel(h)}</Text>
         <View style={styles.hourBody}>
           {items.map((x) => (
-            <Chip key={x.t.id} t={x.t} />
+            <Chip key={x.t.id} t={x.t} locale={locale} />
           ))}
         </View>
       </View>,
@@ -253,11 +285,15 @@ function WeekView({
   start,
   now,
   dated,
+  L,
+  locale,
   onPickDay,
 }: {
   start: Date;
   now: Date;
   dated: Dated[];
+  L: Strings;
+  locale: string;
   onPickDay: (d: Date) => void;
 }) {
   const cols = [];
@@ -273,11 +309,11 @@ function WeekView({
         onPress={() => onPickDay(d)}
       >
         <Text style={[styles.weekHead, isToday && styles.weekHeadToday]}>
-          {DAYS[i]} {d.getDate()}
+          {L.days[i]} {d.getDate()}
         </Text>
         <ScrollView contentContainerStyle={styles.weekBody}>
           {items.map((x) => (
-            <Chip key={x.t.id} t={x.t} />
+            <Chip key={x.t.id} t={x.t} locale={locale} />
           ))}
         </ScrollView>
       </Pressable>,
@@ -291,12 +327,14 @@ function MonthView({
   now,
   dated,
   w,
+  L,
   onPickDay,
 }: {
   month: Date;
   now: Date;
   dated: Dated[];
   w: number;
+  L: Strings;
   onPickDay: (d: Date) => void;
 }) {
   const year = month.getFullYear();
@@ -312,7 +350,7 @@ function MonthView({
   return (
     <ScrollView contentContainerStyle={styles.monthWrap}>
       <View style={styles.monthHeadRow}>
-        {DAYS.map((d) => (
+        {L.days.map((d) => (
           <Text key={d} style={[styles.monthHeadCell, { width: cw }]}>
             {d}
           </Text>
@@ -363,6 +401,7 @@ function YearView({
   now,
   dated,
   h,
+  L,
   onPickMonth,
   onPickDay,
 }: {
@@ -370,6 +409,7 @@ function YearView({
   now: Date;
   dated: Dated[];
   h: number;
+  L: Strings;
   onPickMonth: (d: Date) => void;
   onPickDay: (d: Date) => void;
 }) {
@@ -387,7 +427,7 @@ function YearView({
   return (
     <View style={styles.yearRoot}>
       <ScrollView contentContainerStyle={styles.yearWrap}>
-        {MONTHS.map((mName, m) => {
+        {L.months.map((_mName, m) => {
           const first = new Date(year, m, 1);
           const offset = wd(first);
           const days = new Date(year, m + 1, 0).getDate();
@@ -401,7 +441,7 @@ function YearView({
                 onPress={() => onPickMonth(new Date(year, m, 1))}
                 hitSlop={6}
               >
-                <Text style={styles.miniTitle}>{MONTHS_SHORT[m]} ›</Text>
+                <Text style={styles.miniTitle}>{L.monthsShort[m]} ›</Text>
               </Pressable>
               <View style={styles.miniGrid}>
                 {cells.map((d, i) => {
@@ -438,10 +478,10 @@ function YearView({
         })}
       </ScrollView>
       <View style={styles.rail}>
-        <Text style={styles.railTitle}>À venir</Text>
+        <Text style={styles.railTitle}>{L.calUpcoming}</Text>
         <ScrollView contentContainerStyle={styles.railBody}>
           {upcoming.length === 0 ? (
-            <Text style={styles.railEmpty}>Rien de daté à l'horizon.</Text>
+            <Text style={styles.railEmpty}>{L.calNothingHorizon}</Text>
           ) : (
             upcoming.map((x) => {
               const d = new Date(x.ms);
@@ -456,7 +496,7 @@ function YearView({
                   </Text>
                   <View style={styles.railText}>
                     <Text style={styles.railDate}>
-                      {d.getDate()} {MONTHS_SHORT[d.getMonth()].toLowerCase()}
+                      {L.railDate(d.getDate(), L.monthsShort[d.getMonth()])}
                     </Text>
                     <Text style={styles.railTask} numberOfLines={1}>
                       {x.t.title}
@@ -481,7 +521,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 10,
   },
-  headerLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
+  headerLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingLeft: 31,
+  },
+  headerRight: { flexDirection: "row", alignItems: "center", gap: 12 },
+  body: { flex: 1 },
   zoomBtn: {
     backgroundColor: "#e7eefc",
     borderRadius: 8,
@@ -499,7 +546,7 @@ const styles = StyleSheet.create({
     position: "absolute",
     left: 0,
     right: 0,
-    bottom: 8,
+    bottom: 16,
     alignItems: "center",
   },
   chip: {

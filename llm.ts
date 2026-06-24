@@ -1,4 +1,5 @@
 import { initLlama, type LlamaContext } from "llama.rn";
+import type { Lang } from "./i18n";
 
 // On-device Gemma 4 (E2B) intent parser for Kairos.
 // The GGUF is pushed to the app's external files dir via adb (see install step).
@@ -19,7 +20,10 @@ export async function loadModel(
   ctx = await initLlama(
     {
       model: MODEL_PATH,
-      n_ctx: 2048,
+      // The system prompt grew to ~1.9k tokens (full CRUD + notes + calendar
+      // vocab). With the user turn + n_predict, 2048 overflowed ("Context is
+      // full" on every call), so give the KV cache real headroom.
+      n_ctx: 4096,
       n_gpu_layers: 0, // CPU only on this SoC (Helio G95, no usable GPU backend)
       n_threads: 4, // use the 4 perf-ish cores
     },
@@ -37,7 +41,9 @@ async function warmUp() {
   try {
     await ctx.completion({
       messages: [
-        { role: "system", content: SYSTEM },
+        // Warm the FR prefix (launch default). A later switch to EN pays the
+        // prefill once on its first command.
+        { role: "system", content: SYSTEM_BY_LANG.fr },
         { role: "user", content: "ping" },
       ],
       jinja: true,
@@ -59,7 +65,7 @@ export async function releaseModel() {
   }
 }
 
-const SYSTEM = `Tu es l'analyseur d'intentions de Kairos, un gestionnaire de tâches vocal en français.
+const SYSTEM_FR = `Tu es l'analyseur d'intentions de Kairos, un gestionnaire de tâches vocal en français.
 À partir d'une phrase, tu renvoies UNIQUEMENT un objet JSON décrivant l'action, sans aucun texte autour.
 Outils disponibles :
 - {"tool":"createTask","title":<string>,"due":<string|null>,"dueISO":<string|null>,"priority":<0|1|2|3|null>,"category":<string>,"subcategory":<string|null>,"person":<string|null>,"place":<string|null>}
@@ -68,6 +74,11 @@ Outils disponibles :
 - {"tool":"updateTask","title":<référence>,"changes":{"title?":<string>,"due?":<string>,"dueISO?":<string>,"priority?":<0|1|2|3>,"category?":<string>,"subcategory?":<string>,"person?":<string>,"place?":<string>,"status?":<string>}}  (MODIFIER une tâche existante : ne mets dans "changes" QUE les champs à changer)
 - {"tool":"deleteTask","title":<référence>}  (SUPPRIMER UNE seule tâche)
 - {"tool":"deleteTasks","numbers":<[int,...]|null>,"dayISO":<string|null>}  (SUPPRIMER PLUSIEURS tâches d'un coup : soit une liste de NUMÉROS affichés, soit toutes les tâches d'une JOURNÉE via dayISO)
+- {"tool":"addNote","title":<référence>,"note":<string|null>}  (attacher/REMPLACER la NOTE textuelle d'une tâche : si le contenu est dicté dans la même phrase, mets-le dans "note" ; sinon note=null et l'app demandera de la dicter)
+- {"tool":"appendNote","title":<référence>,"note":<string|null>}  (COMPLÉTER la note existante : on AJOUTE à la suite au lieu de remplacer. "note"=contenu si dicté inline, sinon null)
+- {"tool":"editNote","title":<référence>}  (MODIFIER la note sans préciser comment : l'app demandera éditer / compléter / effacer. À utiliser quand l'intention est ambiguë)
+- {"tool":"readNote","title":<référence>}  (LIRE à voix haute la note d'une tâche)
+- {"tool":"clearNote","title":<référence>}  (SUPPRIMER la note d'une tâche)
 - {"tool":"undo"}  ("annule", "reviens en arrière" : défaire la dernière action)
 - {"tool":"showCalendar","range":<"day"|"week"|"month"|"year">}  (commande système : ouvrir le CALENDRIER graphique en paysage, ou changer de niveau s'il est déjà ouvert)
 - {"tool":"zoomCalendar","direction":<"in"|"out">}  (zoomer le calendrier OUVERT d'un niveau : in = plus de détail (année->mois->semaine->jour) ; out = plus large (jour->semaine->mois->année))
@@ -91,11 +102,89 @@ showTasks : combine librement ces dimensions (toutes facultatives) :
  - urgent : true si "urgentes/prioritaires/importantes", sinon false.
  Ex. "les tâches urgentes en retard pour Paul" -> {"tool":"showTasks","scope":"overdue","category":null,"person":"Paul","place":null,"status":null,"urgent":true}.
 "title" (référence) pour setStatus/updateTask/deleteTask = ce qui désigne la tâche. Les tâches affichées sont NUMÉROTÉES : si l'utilisateur cite un numéro ("supprime la 2", "la tâche 3 est faite", "modifie la 1"), mets ce numéro dans "title" (ex. "2"). Sinon mets les mots-clés du titre.
-updateTask : "reporte X à mardi 15h" -> changes.due/dueISO ; "renomme X en Y" -> changes.title="Y" ; "range X dans Santé" -> changes.category="Santé" ; "mets X urgent" -> changes.priority=3 ; "X c'est avec Paul / au bureau" -> changes.person/place.
+updateTask : "reporte X à mardi 15h" / "décale X à demain" -> changes.due/dueISO ; "renomme X en Y" -> changes.title="Y" ; "mets X urgent" -> changes.priority=3 ; "X c'est avec Paul / au bureau" -> changes.person/place.
+updateTask DÉPLACER (changer de dossier) : "range / déplace / bouge / transfère / mets / classe X dans|vers le dossier Santé" -> changes.category="Santé" (et changes.subcategory pour un sous-dossier). C'est une MODIFICATION de la tâche existante, jamais une création.
 deleteTask vs deleteTasks : UNE seule tâche ("supprime la 2", "efface le rapport") -> deleteTask. PLUSIEURS d'un coup : "supprime les tâches 1, 3 et 5" / "efface les 2 et 4" -> deleteTasks avec numbers=[1,3,5] ; "efface TOUTES les tâches d'aujourd'hui / de lundi / du 18 juin / de cette journée" -> deleteTasks avec dayISO = la date de ce jour (AAAA-MM-JJ) résolue depuis la DATE ACTUELLE, numbers=null.
+addNote : "ajoute une note à la tâche 2", "note sur la 3", "annote la 1" -> addNote avec note=null (l'app demandera le texte). Si le contenu suit dans la même phrase ("note sur la 2 : apporter le dossier bleu", "ajoute la note rappeler d'appeler avant"), mets ce contenu littéral dans "note" (sans le préfixe « note :/que/de »). Ne confonds pas avec createTask : "ajoute une note à la tâche 2" n'est PAS une nouvelle tâche.
+addNote/appendNote/editNote (choix de l'opération sur la note) :
+ - "remplace/refais la note de la 2 PAR <texte>" (nouveau contenu donné) -> addNote.
+ - "complète / ajoute à la note / ajoute aussi / rajoute à la note de la 2" -> appendNote (garde l'ancienne, ajoute à la suite).
+ - "MODIFIE / change / corrige / édite la note de la 2" SANS dire comment ni donner de nouveau texte -> editNote (NE choisis PAS addNote ni clearNote : l'app demandera éditer/compléter/effacer pour ne pas perdre la note).
+ - "efface / supprime / enlève la note de la 2" -> clearNote.
+ Même règle pour "note" : contenu inline si dicté, sinon null.
+readNote : "lis la note de la 2", "quelle est la note de la 1", "rappelle-moi la note" -> readNote. clearNote : "supprime/efface la note de la 3", "enlève la note" -> clearNote.
 showCalendar : "calendrier quotidien/du jour" -> day ; "calendrier hebdomadaire/de la semaine" -> week ; "calendrier mensuel/du mois" -> month ; "calendrier annuel/de l'année" -> year.
 zoomCalendar (calendrier déjà ouvert) : "zoome / zoom avant / rapproche / agrandis / plus de détail / plus précis" -> direction="in" ; "dézoome / zoom arrière / recule / élargis / vue d'ensemble / plus large" -> direction="out". Si un NIVEAU précis est nommé ("passe en mensuel", "vue annuelle"), utilise plutôt showCalendar.
 Réponds en JSON compact.`;
+
+// English counterpart of the system prompt — same JSON tool schemas, English
+// routing vocabulary. Selected when the UI language is EN so English voice
+// commands are parsed. Only ONE prompt is active per call, so n_ctx (4096) is
+// unaffected. Keep tool names + JSON keys IDENTICAL to the French prompt.
+const SYSTEM_EN = `You are Kairos's intent parser, a voice-driven task manager in English.
+From a sentence, you return ONLY a JSON object describing the action, with no surrounding text.
+Available tools:
+- {"tool":"createTask","title":<string>,"due":<string|null>,"dueISO":<string|null>,"priority":<0|1|2|3|null>,"category":<string>,"subcategory":<string|null>,"person":<string|null>,"place":<string|null>}
+- {"tool":"setStatus","title":<string>,"status":<"done"|"pending"|"postponed"|"archived"|"todo">}  (change the status of an existing task)
+- {"tool":"showTasks","scope":<"all"|"hours"|"day"|"week"|"month"|"overdue"|"reminder">,"category":<string|null>,"person":<string|null>,"place":<string|null>,"status":<"pending"|"postponed"|"done"|"archived"|"todo"|null>,"urgent":<true|false>}  (system command: DISPLAY tasks; creates/changes nothing)
+- {"tool":"updateTask","title":<reference>,"changes":{"title?":<string>,"due?":<string>,"dueISO?":<string>,"priority?":<0|1|2|3>,"category?":<string>,"subcategory?":<string>,"person?":<string>,"place?":<string>,"status?":<string>}}  (MODIFY an existing task: put ONLY the fields to change in "changes")
+- {"tool":"deleteTask","title":<reference>}  (DELETE ONE single task)
+- {"tool":"deleteTasks","numbers":<[int,...]|null>,"dayISO":<string|null>}  (DELETE SEVERAL tasks at once: either a list of DISPLAYED NUMBERS, or every task of a DAY via dayISO)
+- {"tool":"addNote","title":<reference>,"note":<string|null>}  (attach/REPLACE a task's textual NOTE: if the content is dictated in the same sentence, put it in "note"; otherwise note=null and the app will ask for it)
+- {"tool":"appendNote","title":<reference>,"note":<string|null>}  (APPEND to the existing note: ADD after it instead of replacing. "note"=content if dictated inline, else null)
+- {"tool":"editNote","title":<reference>}  (MODIFY the note without saying how: the app will ask edit / append / erase. Use when the intent is ambiguous)
+- {"tool":"readNote","title":<reference>}  (READ a task's note aloud)
+- {"tool":"clearNote","title":<reference>}  (DELETE a task's note)
+- {"tool":"undo"}  ("undo", "go back": revert the last action)
+- {"tool":"showCalendar","range":<"day"|"week"|"month"|"year">}  (system command: open the graphical CALENDAR in landscape, or switch level if it's already open)
+- {"tool":"zoomCalendar","direction":<"in"|"out">}  (zoom the OPEN calendar by one level: in = more detail (year->month->week->day); out = wider (day->week->month->year))
+- {"tool":"unknown"} if nothing matches.
+"due" keeps the time expression as-is (e.g. "tomorrow 2pm").
+"dueISO" = due date resolved to ISO 8601 ("2026-06-15T14:00") from the CURRENT DATE provided, or null.
+"category" (level 1): if a PROJECT is named (e.g. "project Mon Assistant Pro"), category = the project name; otherwise a short thematic folder (Health, Contact, Appointment, Shopping, Work, Finances, Family, Misc).
+"subcategory" (level 2, optional) = sub-folder (e.g. project -> "UI", "Tests") else null.
+"person" (WHO) = the named/implied person ("with Paul", "for mom", "call the dentist") -> "Paul"/"Mom"/"Dentist"; else null.
+"place" (WHERE) = the place or context ("at the office", "at home", "in Paris", "at the doctor") -> "Office"/"Home"/"Paris"; else null.
+For createTask, set priority to 2 or 3 if urgency is expressed ("urgent", "important", "asap", "right away").
+Keep the concrete task in "title", without the project/sub-folder/person/place preamble.
+If the action is to CALL / phone / ring back / contact a person ("call Paul", "phone Marie", "ring the client back"), category = "Contact" (and put the person in "person"), even if a place like "at the office" is mentioned.
+setStatus: "mark/set X pending" -> pending; "X is done/completed/finished" -> done; "postpone X / later" -> postponed; "archive X" -> archived; "reactivate X" -> todo.
+showTasks: freely combine these dimensions (all optional):
+ - scope (WHEN): "show the tasks" -> all; "next hours" -> hours; "today" -> day; "this week" -> week; "this month" -> month; "overdue/past due" -> overdue; "reminder / what's coming up / upcoming and overdue" -> reminder. If NO time mention is made, scope = "all" (never default to "day").
+ - category (WHAT): targeted folder/project ("for Mon Assistant Pro", "in Health") else null.
+ - person (WHO): targeted person ("for Paul", "with mom") else null.
+ - place (WHERE): targeted place ("at the office", "at home") else null.
+ - status (STATE): "what's pending" -> pending; "to postpone" -> postponed; "done/completed" -> done; "archived" -> archived; else null.
+ - urgent: true if "urgent/priority/important", else false.
+ Ex. "the urgent overdue tasks for Paul" -> {"tool":"showTasks","scope":"overdue","category":null,"person":"Paul","place":null,"status":null,"urgent":true}.
+"title" (reference) for setStatus/updateTask/deleteTask = what designates the task. Displayed tasks are NUMBERED: if the user cites a number ("delete 2", "task 3 is done", "edit 1"), put that number in "title" (e.g. "2"). Otherwise put the title keywords.
+updateTask: "postpone X to Tuesday 3pm" / "push X to tomorrow" -> changes.due/dueISO; "rename X to Y" -> changes.title="Y"; "make X urgent" -> changes.priority=3; "X is with Paul / at the office" -> changes.person/place.
+updateTask MOVE (change folder): "file / move / put / transfer / sort X into|to the Health folder" -> changes.category="Health" (and changes.subcategory for a sub-folder). It's a MODIFICATION of the existing task, never a creation.
+deleteTask vs deleteTasks: ONE single task ("delete 2", "remove the report") -> deleteTask. SEVERAL at once: "delete tasks 1, 3 and 5" / "remove 2 and 4" -> deleteTasks with numbers=[1,3,5]; "delete ALL of today's / Monday's / June 18th / this day's tasks" -> deleteTasks with dayISO = that day's date (YYYY-MM-DD) resolved from the CURRENT DATE, numbers=null.
+addNote: "add a note to task 2", "note on 3", "annotate 1" -> addNote with note=null (the app will ask for the text). If the content follows in the same sentence ("note on 2: bring the blue folder", "add the note remember to call first"), put that literal content in "note" (without the "note:/that/of" prefix). Don't confuse with createTask: "add a note to task 2" is NOT a new task.
+addNote/appendNote/editNote (choosing the note operation):
+ - "replace/redo the note of 2 WITH <text>" (new content given) -> addNote.
+ - "complete / add to the note / also add / append to the note of 2" -> appendNote (keep the old one, add after it).
+ - "MODIFY / change / fix / edit the note of 2" WITHOUT saying how or giving new text -> editNote (do NOT pick addNote or clearNote: the app will ask edit/append/erase so the note isn't lost).
+ - "erase / delete / remove the note of 2" -> clearNote.
+ Same rule for "note": inline content if dictated, else null.
+readNote: "read the note of 2", "what's the note of 1", "remind me the note" -> readNote. clearNote: "delete/erase the note of 3", "remove the note" -> clearNote.
+showCalendar: "daily calendar/day calendar" -> day; "weekly calendar/this week" -> week; "monthly calendar/this month" -> month; "yearly calendar/the year" -> year.
+zoomCalendar (calendar already open): "zoom / zoom in / closer / enlarge / more detail / more precise" -> direction="in"; "zoom out / back out / widen / overview / wider" -> direction="out". If a specific LEVEL is named ("switch to monthly", "yearly view"), use showCalendar instead.
+Answer in compact JSON.`;
+
+const SYSTEM_BY_LANG: Record<Lang, string> = { fr: SYSTEM_FR, en: SYSTEM_EN };
+
+// Prefix prepended to the user turn carrying the resolved current date/time.
+const DATE_PREFIX: Record<Lang, string> = {
+  fr: "Date actuelle",
+  en: "Current date",
+};
+
+const WEEKDAYS: Record<Lang, string[]> = {
+  fr: ["dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"],
+  en: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"],
+};
 
 export type IntentResult = {
   json: string;
@@ -117,29 +206,26 @@ function extractJson(raw: string): string {
   return s >= 0 && e > s ? body.slice(s, e + 1).trim() : body.trim();
 }
 
-function nowContext(): string {
+function nowContext(lang: Lang): string {
   const d = new Date();
   const p = (n: number) => String(n).padStart(2, "0");
   const local = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
-  const jours = [
-    "dimanche",
-    "lundi",
-    "mardi",
-    "mercredi",
-    "jeudi",
-    "vendredi",
-    "samedi",
-  ];
-  return `${jours[d.getDay()]} ${local}`;
+  return `${WEEKDAYS[lang][d.getDay()]} ${local}`;
 }
 
-export async function parseIntent(text: string): Promise<IntentResult> {
+export async function parseIntent(
+  text: string,
+  lang: Lang = "fr",
+): Promise<IntentResult> {
   if (!ctx) throw new Error("model not loaded");
   const t0 = Date.now();
   const res = await ctx.completion({
     messages: [
-      { role: "system", content: SYSTEM },
-      { role: "user", content: `Date actuelle: ${nowContext()}.\n${text}` },
+      { role: "system", content: SYSTEM_BY_LANG[lang] },
+      {
+        role: "user",
+        content: `${DATE_PREFIX[lang]}: ${nowContext(lang)}.\n${text}`,
+      },
     ],
     jinja: true, // use Gemma 4's embedded chat template
     // Gemma 4 is a reasoning model: thinking is ON by default and dumps a long
