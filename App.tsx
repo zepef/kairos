@@ -931,6 +931,17 @@ export default function App() {
         : L.orbHoldIdle;
   const orbSub = status === "listening" ? L.orbSubListening : L.orbSub;
 
+  // The detected-intent line shown in the calendar header, right of the date:
+  // listening → understanding → the understood result (the spoken summary). It
+  // updates live as commands land while the calendar is open.
+  const calIntentText =
+    status === "listening"
+      ? L.listeningShort
+      : processing
+        ? L.understanding
+        : summary;
+  const calIntentEmoji = status === "listening" || processing ? "" : summaryEmoji;
+
   // The orb doubles as the push-to-talk button once ready: hold to listen. It is
   // disabled while an utterance is still being understood/displayed (processing)
   // so a new command can't start before the current one is fully resolved.
@@ -1064,6 +1075,8 @@ export default function App() {
         tasks={tasks}
         lang={lang}
         theme={theme}
+        intentText={calIntentText}
+        intentEmoji={calIntentEmoji}
         onNavigate={(range, anchor) => setCalendar({ range, anchor })}
         renderTalk={renderTalk}
         onClose={() => setCalendar(null)}

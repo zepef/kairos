@@ -104,6 +104,8 @@ export default function CalendarView({
   tasks,
   lang,
   theme,
+  intentText,
+  intentEmoji,
   onNavigate,
   onClose,
   renderTalk,
@@ -113,6 +115,8 @@ export default function CalendarView({
   tasks: Task[];
   lang: Lang;
   theme: Theme;
+  intentText?: string;
+  intentEmoji?: string;
   onNavigate: (range: CalRange, anchor: Date) => void;
   onClose: () => void;
   renderTalk?: (size: number) => ReactNode;
@@ -179,6 +183,10 @@ export default function CalendarView({
             </Pressable>
           )}
         </View>
+        {/* Detected intent, live (right of the date, italic). Empty = spacer. */}
+        <Text style={st.headerIntent} numberOfLines={1}>
+          {intentText ? (intentEmoji ? `${intentEmoji}  ` : "") + intentText : ""}
+        </Text>
         <View style={st.headerRight}>
           {/* Zoom out: widen the window (day→week→month→year), same anchor.
               Sits left of Fermer so the Android nav bar never clips it. */}
@@ -548,6 +556,14 @@ function makeStyles(t: Theme) {
       paddingLeft: 31,
     },
     headerRight: { flexDirection: "row", alignItems: "center", gap: 12 },
+    headerIntent: {
+      flex: 1,
+      marginHorizontal: 12,
+      fontFamily: t.body.regular,
+      fontStyle: "italic",
+      fontSize: 13,
+      color: t.muted,
+    },
     body: { flex: 1 },
     zoomBtn: {
       backgroundColor: t.chipBg,
