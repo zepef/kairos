@@ -24,7 +24,13 @@
     },
     "plugins": [
       "expo-speech-recognition",
-      "llama.rn"
+      "llama.rn",
+      [
+        "expo-calendar",
+        {
+          "calendarPermission": "Kairos écrit vos tâches datées dans l'agenda Google que vous choisissez."
+        }
+      ]
     ]
   }
 }

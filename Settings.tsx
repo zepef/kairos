@@ -1,12 +1,14 @@
 // Settings.tsx — the Réglages screen (design 5.4), reached from the home ⚙
 // button. Themed by the active theme; the Appearance tiles preview and switch
 // the three themes live. TTS + language (previously in the bottom bar) live here.
+import { useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
 import { useTheme } from "./ThemeContext";
 import { THEMES, THEME_ORDER, type Theme } from "./theme";
 import { LangToggle } from "./flags";
 import { Orb } from "./Orb";
 import type { Lang, Strings } from "./i18n";
+import type { CalInfo } from "./gcal";
 
 export default function Settings({
   lang,
@@ -15,6 +17,13 @@ export default function Settings({
   setTtsOn,
   onClose,
   L,
+  gcalEnabled,
+  setGcalEnabled,
+  gcalCalendars,
+  gcalCalendarId,
+  onSelectCalendar,
+  gcalBusy,
+  onSyncNow,
 }: {
   lang: Lang;
   setLang: (l: Lang) => void;
@@ -22,9 +31,17 @@ export default function Settings({
   setTtsOn: (b: boolean) => void;
   onClose: () => void;
   L: Strings;
+  gcalEnabled: boolean;
+  setGcalEnabled: (b: boolean) => void;
+  gcalCalendars: CalInfo[];
+  gcalCalendarId: string | null;
+  onSelectCalendar: (id: string) => void;
+  gcalBusy: boolean;
+  onSyncNow: () => Promise<string>;
 }) {
   const { theme, name, setTheme } = useTheme();
   const s = makeStyles(theme);
+  const [syncMsg, setSyncMsg] = useState("");
   return (
     <View style={s.screen}>
       <View style={s.header}>
@@ -75,6 +92,62 @@ export default function Settings({
           />
         </View>
 
+        {/* Synchronisation (Google Agenda) */}
+        <Text style={s.section}>{L.settingsSync}</Text>
+        <View style={s.card}>
+          <View style={s.cardTextCol}>
+            <Text style={s.cardLabel}>{L.settingsSyncGoogle}</Text>
+            <Text style={s.cardSub}>{L.settingsSyncSub}</Text>
+          </View>
+          <Switch
+            value={gcalEnabled}
+            onValueChange={setGcalEnabled}
+            trackColor={{ true: theme.accent, false: theme.line }}
+            thumbColor="#ffffff"
+          />
+        </View>
+        {gcalEnabled && (
+          <View style={s.cardCol}>
+            {gcalCalendars.length === 0 ? (
+              <Text style={s.cardSub}>{L.settingsSyncNoCalendar}</Text>
+            ) : (
+              gcalCalendars.map((c) => {
+                const sel = c.id === gcalCalendarId;
+                return (
+                  <Pressable
+                    key={c.id}
+                    style={[s.calRow, sel && s.calRowSel]}
+                    onPress={() => onSelectCalendar(c.id)}
+                  >
+                    <View style={s.cardTextCol}>
+                      <Text style={s.cardLabel} numberOfLines={1}>
+                        {c.title}
+                      </Text>
+                      {c.sourceName ? (
+                        <Text style={s.cardSub} numberOfLines={1}>
+                          {c.sourceName}
+                        </Text>
+                      ) : null}
+                    </View>
+                    {sel ? <Text style={s.calCheck}>✓</Text> : null}
+                  </Pressable>
+                );
+              })
+            )}
+            <Pressable
+              style={[
+                s.syncBtn,
+                (!gcalCalendarId || gcalBusy) && s.syncBtnDisabled,
+              ]}
+              disabled={!gcalCalendarId || gcalBusy}
+              onPress={async () => setSyncMsg(await onSyncNow())}
+            >
+              <Text style={s.syncBtnText}>{L.settingsSyncNow}</Text>
+            </Pressable>
+            {syncMsg ? <Text style={s.syncMsg}>{syncMsg}</Text> : null}
+          </View>
+        )}
+
         {/* Modèle et confidentialité */}
         <Text style={s.section}>{L.settingsModelPrivacy}</Text>
         <View style={s.cardCol}>
@@ -83,7 +156,9 @@ export default function Settings({
             <Text style={s.ready}>{L.settingsReady}</Text>
           </View>
           <Text style={s.modelMeta}>{L.settingsModelMeta}</Text>
-          <Text style={s.privacy}>{L.settingsPrivacyLine}</Text>
+          <Text style={s.privacy}>
+            {gcalEnabled ? L.settingsPrivacyLineSync : L.settingsPrivacyLine}
+          </Text>
         </View>
 
         <Text style={s.footer}>{L.versionLabel}</Text>
@@ -153,6 +228,35 @@ function makeStyles(t: Theme) {
     ready: { fontFamily: t.body.semibold, fontSize: 12, color: t.accent2 },
     modelMeta: { fontFamily: t.body.regular, fontSize: 12, color: t.muted, marginTop: 4 },
     privacy: { fontFamily: t.body.medium, fontSize: 12, color: t.ink, marginTop: 10 },
+    calRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingVertical: 10,
+      paddingHorizontal: 12,
+      borderRadius: 10,
+      borderWidth: 1.5,
+      borderColor: t.line,
+      marginBottom: 8,
+    },
+    calRowSel: { borderColor: t.accent },
+    calCheck: { fontFamily: t.body.bold, fontSize: 14, color: t.accent, marginLeft: 8 },
+    syncBtn: {
+      marginTop: 4,
+      paddingVertical: 11,
+      borderRadius: 12,
+      backgroundColor: t.accent,
+      alignItems: "center",
+    },
+    syncBtnDisabled: { opacity: 0.4 },
+    syncBtnText: { fontFamily: t.display.semibold, fontSize: 14, color: t.bg },
+    syncMsg: {
+      fontFamily: t.body.regular,
+      fontSize: 12,
+      color: t.muted,
+      marginTop: 8,
+      textAlign: "center",
+    },
     footer: {
       fontFamily: t.body.medium,
       fontSize: 12,

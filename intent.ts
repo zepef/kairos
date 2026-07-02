@@ -89,6 +89,7 @@ export type DispatchResult = {
   calendar?: CalRange; // system command: open a graphical calendar (landscape)
   calendarZoom?: "in" | "out"; // relative zoom of the open calendar (in = more
   // detail, year→month→week→day ; out = wider, day→week→month→year)
+  sync?: true; // system command: push dated tasks to the configured Google calendar
   noteCapture?: {
     taskId: number;
     title: string;
@@ -807,6 +808,14 @@ export async function dispatch(
         emoji: "🔍",
         calendarZoom: dir,
       };
+      break;
+    }
+    // System command: push dated tasks to the configured Google calendar. The
+    // actual calendar write lives in App (gcal.ts); dispatch only signals it,
+    // like showCalendar/undo (this file imports only ./db + ./i18n).
+    case "syncCalendar":
+    case "sync": {
+      out = { ok: true, tool: "syncCalendar", speech: "", emoji: "🔄", sync: true };
       break;
     }
     default:

@@ -112,6 +112,23 @@ const FR = {
   settingsModelMeta: "3 Go · sur l'appareil",
   settingsReady: "Prêt",
   settingsPrivacyLine: "✈ 100 % hors-ligne · 0 donnée envoyée",
+  // ── Synchronisation Google Agenda ──
+  settingsSync: "Synchronisation",
+  settingsSyncGoogle: "Google Agenda",
+  settingsSyncSub: "Alimente l'agenda choisi avec vos tâches datées",
+  settingsSyncNoCalendar:
+    "Aucun agenda Google inscriptible. Ajoutez un compte Google (Réglages Android) avec la synchro Agenda activée.",
+  settingsSyncNow: "Synchroniser maintenant",
+  settingsPrivacyLineSync:
+    "🔄 Synchro via votre compte Google — c'est l'appareil, pas l'app, qui envoie",
+  gcalSynced: (created: number, updated: number, deleted: number) =>
+    `Agenda synchronisé : ${created} ajoutée${created > 1 ? "s" : ""}, ${updated} mise${updated > 1 ? "s" : ""} à jour, ${deleted} retirée${deleted > 1 ? "s" : ""}.`,
+  gcalNothing: "Agenda déjà à jour.",
+  gcalNoCalendar: "Aucun agenda configuré. Choisissez-en un dans les Réglages.",
+  gcalNoPermission: "Accès à l'agenda refusé.",
+  gcalCalendarMissing:
+    "L'agenda choisi est introuvable. Reconfigurez-le dans les Réglages.",
+  gcalError: "La synchronisation a rencontré une erreur.",
 
   // ── Calendar chrome ───────────────────────────────────────────────
   calClose: "✕ Fermer",
@@ -276,6 +293,23 @@ const EN: Strings = {
   settingsModelMeta: "3 GB · on device",
   settingsReady: "Ready",
   settingsPrivacyLine: "✈ 100% offline · 0 data sent",
+  // ── Google Calendar sync ──
+  settingsSync: "Sync",
+  settingsSyncGoogle: "Google Calendar",
+  settingsSyncSub: "Feed the chosen calendar with your dated tasks",
+  settingsSyncNoCalendar:
+    "No writable Google calendar. Add a Google account (Android settings) with Calendar sync on.",
+  settingsSyncNow: "Sync now",
+  settingsPrivacyLineSync:
+    "🔄 Synced via your Google account — the device, not the app, sends it",
+  gcalSynced: (created: number, updated: number, deleted: number) =>
+    `Calendar synced: ${created} added, ${updated} updated, ${deleted} removed.`,
+  gcalNothing: "Calendar already up to date.",
+  gcalNoCalendar: "No calendar configured. Choose one in Settings.",
+  gcalNoPermission: "Calendar access denied.",
+  gcalCalendarMissing:
+    "The chosen calendar is missing. Reconfigure it in Settings.",
+  gcalError: "Sync ran into an error.",
 
   calClose: "✕ Close",
   calUpcoming: "Upcoming",

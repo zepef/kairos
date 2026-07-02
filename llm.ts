@@ -82,6 +82,7 @@ Outils disponibles :
 - {"tool":"undo"}  ("annule", "reviens en arrière" : défaire la dernière action)
 - {"tool":"showCalendar","range":<"day"|"week"|"month"|"year">}  (commande système : ouvrir le CALENDRIER graphique en paysage, ou changer de niveau s'il est déjà ouvert)
 - {"tool":"zoomCalendar","direction":<"in"|"out">}  (zoomer le calendrier OUVERT d'un niveau : in = plus de détail (année->mois->semaine->jour) ; out = plus large (jour->semaine->mois->année))
+- {"tool":"syncCalendar"}  (commande système : synchroniser/pousser les tâches datées vers Google Agenda ; ne crée/modifie aucune tâche)
 - {"tool":"unknown"} si rien ne correspond.
 "due" reprend l'expression temporelle telle quelle (ex: "demain 14h").
 "dueISO" = échéance résolue en date ISO 8601 ("2026-06-15T14:00") depuis la DATE ACTUELLE fournie, ou null.
@@ -116,6 +117,7 @@ addNote/appendNote/editNote (choix de l'opération sur la note) :
 readNote : "lis la note de la 2", "quelle est la note de la 1", "rappelle-moi la note" -> readNote. clearNote : "supprime/efface la note de la 3", "enlève la note" -> clearNote.
 showCalendar : "calendrier quotidien/du jour" -> day ; "calendrier hebdomadaire/de la semaine" -> week ; "calendrier mensuel/du mois" -> month ; "calendrier annuel/de l'année" -> year.
 zoomCalendar (calendrier déjà ouvert) : "zoome / zoom avant / rapproche / agrandis / plus de détail / plus précis" -> direction="in" ; "dézoome / zoom arrière / recule / élargis / vue d'ensemble / plus large" -> direction="out". Si un NIVEAU précis est nommé ("passe en mensuel", "vue annuelle"), utilise plutôt showCalendar.
+syncCalendar : "synchronise (mon agenda)", "mets à jour mon Google Agenda / mon calendrier", "exporte mes tâches vers Google Agenda", "envoie au calendrier Google" -> {"tool":"syncCalendar"}.
 Réponds en JSON compact.`;
 
 // English counterpart of the system prompt — same JSON tool schemas, English
@@ -139,6 +141,7 @@ Available tools:
 - {"tool":"undo"}  ("undo", "go back": revert the last action)
 - {"tool":"showCalendar","range":<"day"|"week"|"month"|"year">}  (system command: open the graphical CALENDAR in landscape, or switch level if it's already open)
 - {"tool":"zoomCalendar","direction":<"in"|"out">}  (zoom the OPEN calendar by one level: in = more detail (year->month->week->day); out = wider (day->week->month->year))
+- {"tool":"syncCalendar"}  (system command: sync/push dated tasks to Google Calendar; creates/changes no task)
 - {"tool":"unknown"} if nothing matches.
 "due" keeps the time expression as-is (e.g. "tomorrow 2pm").
 "dueISO" = due date resolved to ISO 8601 ("2026-06-15T14:00") from the CURRENT DATE provided, or null.
@@ -173,6 +176,7 @@ addNote/appendNote/editNote (choosing the note operation):
 readNote: "read the note of 2", "what's the note of 1", "remind me the note" -> readNote. clearNote: "delete/erase the note of 3", "remove the note" -> clearNote.
 showCalendar: "daily calendar/day calendar" -> day; "weekly calendar/this week" -> week; "monthly calendar/this month" -> month; "yearly calendar/the year" -> year.
 zoomCalendar (calendar already open): "zoom / zoom in / closer / enlarge / more detail / more precise" -> direction="in"; "zoom out / back out / widen / overview / wider" -> direction="out". If a specific LEVEL is named ("switch to monthly", "yearly view"), use showCalendar instead.
+syncCalendar : "synchronize / sync my calendar", "update my Google Calendar", "export my tasks to Google Calendar", "send to Google Calendar" -> {"tool":"syncCalendar"}.
 Answer in compact JSON.`;
 
 const SYSTEM_BY_LANG: Record<Lang, string> = { fr: SYSTEM_FR, en: SYSTEM_EN };

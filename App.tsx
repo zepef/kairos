@@ -37,6 +37,13 @@ import { useAppFonts } from "./fonts";
 import { Orb, LogoMark, type OrbVState } from "./Orb";
 import Picker from "./Picker";
 import Settings from "./Settings";
+import {
+  syncNow,
+  requestAccess,
+  listWritableGoogleCalendars,
+  type CalInfo,
+  type SyncSummary,
+} from "./gcal";
 
 // Kairos — STT (FR/EN) + on-device intent parsing with Gemma 4 (E2B) via
 // llama.rn. Voice -> STT -> Gemma 4 (JSON action) -> execute on SQLite -> TTS.
@@ -186,6 +193,12 @@ export default function App() {
   const [started, setStarted] = useState(false);
   // Settings overlay (reached from the home ⚙ button).
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Google Calendar one-way sync (opt-in, OFF by default). Configured in
+  // Settings; runs on the "synchronise" intent or the Settings button.
+  const [gcalEnabled, setGcalEnabled] = useState(false);
+  const [gcalCalendarId, setGcalCalendarId] = useState<string | null>(null);
+  const [gcalCalendars, setGcalCalendars] = useState<CalInfo[]>([]);
+  const [gcalBusy, setGcalBusy] = useState(false);
 
   const [modelStatus, setModelStatus] = useState<ModelStatus>("unloaded");
   const [loadPct, setLoadPct] = useState(0);
@@ -261,6 +274,46 @@ export default function App() {
     setSetting("lang", l).catch(() => {});
   };
 
+  // ── Google Calendar sync helpers ──
+  const changeGcalEnabled = async (b: boolean) => {
+    setGcalEnabled(b);
+    setSetting("gcalEnabled", b ? "1" : "0").catch(() => {});
+    // On enable, ask for calendar access and load the writable Google calendars.
+    if (b && (await requestAccess())) {
+      setGcalCalendars(await listWritableGoogleCalendars());
+    }
+  };
+  const chooseCalendar = (id: string) => {
+    setGcalCalendarId(id);
+    setSetting("gcalCalendarId", id).catch(() => {});
+  };
+  // Map a sync summary to a localized spoken/on-screen sentence.
+  const speechForSummary = (sum: SyncSummary): string => {
+    if (sum.reason === "no-calendar") return L.gcalNoCalendar;
+    if (sum.reason === "no-permission") return L.gcalNoPermission;
+    if (sum.reason === "calendar-missing") return L.gcalCalendarMissing;
+    const touched = sum.created + sum.updated + sum.deleted;
+    if (sum.errors > 0 && touched === 0) return L.gcalError;
+    if (touched === 0) return L.gcalNothing;
+    return L.gcalSynced(sum.created, sum.updated, sum.deleted);
+  };
+  // Full sync shared by the "synchronise" intent and the Settings button.
+  const runGcalSync = async (): Promise<string> => {
+    // Respect the Settings toggle even on the voice path: a stored calendar id
+    // must NOT sync once the feature is switched off.
+    if (!gcalEnabled) return L.gcalNoCalendar;
+    setGcalBusy(true);
+    try {
+      const sum = await syncNow({ calendarId: gcalCalendarId });
+      await refreshTasks();
+      return speechForSummary(sum);
+    } catch {
+      return L.gcalError;
+    } finally {
+      setGcalBusy(false);
+    }
+  };
+
   // Launch overdue check fires once, after the user taps "Commencer" (so the
   // alert doesn't talk over the loading announcements).
   const warmAnnounced = useRef(false);
@@ -280,6 +333,11 @@ export default function App() {
         if (isThemeName(savedTheme)) setThemeName(savedTheme);
         const savedLang = await getSetting("lang");
         if (savedLang === "fr" || savedLang === "en") setLang(savedLang);
+        const gcalOn = (await getSetting("gcalEnabled")) === "1";
+        setGcalEnabled(gcalOn);
+        setGcalCalendarId(await getSetting("gcalCalendarId"));
+        if (gcalOn)
+          listWritableGoogleCalendars().then(setGcalCalendars).catch(() => {});
         await refreshTasks();
       } catch (e: any) {
         addLog(`✗ db init: ${e?.message ?? e}`);
@@ -650,6 +708,12 @@ export default function App() {
         setSummary(res.speech);
         setSummaryEmoji(res.emoji);
         speak(res.speech);
+      } else if (res.sync) {
+        // System command: push dated tasks to the configured Google calendar.
+        const sp = await runGcalSync();
+        setSummary(sp);
+        setSummaryEmoji(res.emoji);
+        speak(sp);
       } else {
         if (res.show) {
           setDisplay(res.show); // system command: show the task list
@@ -1068,6 +1132,17 @@ export default function App() {
         setTtsOn={setTtsOn}
         onClose={() => setSettingsOpen(false)}
         L={L}
+        gcalEnabled={gcalEnabled}
+        setGcalEnabled={changeGcalEnabled}
+        gcalCalendars={gcalCalendars}
+        gcalCalendarId={gcalCalendarId}
+        onSelectCalendar={chooseCalendar}
+        gcalBusy={gcalBusy}
+        onSyncNow={async () => {
+          const sp = await runGcalSync();
+          speak(sp);
+          return sp;
+        }}
       />
     );
   } else if (calendar) {
