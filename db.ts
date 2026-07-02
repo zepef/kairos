@@ -72,6 +72,10 @@ export async function initDb(): Promise<void> {
       result TEXT,
       created_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS setting (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `);
   // Migrations for existing installs (ignore "duplicate column" errors).
   for (const col of [
@@ -281,5 +285,24 @@ export async function logIntent(entry: {
     entry.paramsJson,
     entry.result,
     Date.now(),
+  );
+}
+
+// ── Preferences (key/value) ──
+// Small durable store for UI preferences (active theme, language) so a choice
+// survives relaunch — reuses SQLite, no extra native storage dependency.
+export async function getSetting(key: string): Promise<string | null> {
+  const row = await requireDb().getFirstAsync<{ value: string }>(
+    "SELECT value FROM setting WHERE key=?",
+    key,
+  );
+  return row?.value ?? null;
+}
+
+export async function setSetting(key: string, value: string): Promise<void> {
+  await requireDb().runAsync(
+    "INSERT INTO setting (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+    key,
+    value,
   );
 }

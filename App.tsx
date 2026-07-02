@@ -1,14 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import {
-  ActivityIndicator,
-  Image,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Switch,
-  Text,
-  View,
-} from "react-native";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import * as Speech from "expo-speech";
 import {
@@ -30,25 +21,32 @@ import {
 import {
   applyRevert,
   deleteTaskById,
+  getSetting,
   initDb,
   listTasks,
+  setSetting,
   updateTaskById,
   type Revert,
   type Task,
 } from "./db";
 import { tr, type Lang, STT_LANG, TTS_LANG } from "./i18n";
 import { LangToggle } from "./flags";
+import { THEMES, DEFAULT_THEME, type Theme, type ThemeName } from "./theme";
+import { ThemeContext, isThemeName } from "./ThemeContext";
+import { useAppFonts } from "./fonts";
+import { Orb, LogoMark, type OrbVState } from "./Orb";
+import Picker from "./Picker";
+import Settings from "./Settings";
 
 // Kairos — STT (FR/EN) + on-device intent parsing with Gemma 4 (E2B) via
 // llama.rn. Voice -> STT -> Gemma 4 (JSON action) -> execute on SQLite -> TTS.
 // The active language (state below) drives STT/TTS locale, the Gemma system
-// prompt and every on-screen + spoken string (see i18n.ts).
+// prompt and every on-screen + spoken string (see i18n.ts). The active theme
+// (theme.ts / ThemeContext) re-skins the whole UI live.
 
-// Kairos logo — centered on the launch screen and used as the PTT button.
-const LOGO = require("./assets/kairos-logo.png");
-// Shared sizing so the logo + circle are identical on the launch screen and the
-// push-to-talk button (PTT sizing validated as "perfect": 132 logo, +30 ring).
-const LOGO_SIZE = 132;
+// Home orb diameter (the push-to-talk zone). Compact orbs (list/calendar) size
+// themselves inline.
+const ORB_SIZE = 210;
 
 type Status = "idle" | "listening" | "speaking";
 type ModelStatus = "unloaded" | "loading" | "ready" | "error";
@@ -172,9 +170,18 @@ export default function App() {
   const [status, setStatus] = useState<Status>("idle");
   const [log, setLog] = useState<string[]>([]);
   const [testIdx, setTestIdx] = useState(0);
-  // Active UI/voice language (FR launch default), toggled by the bottom flags.
-  // Drives STT/TTS locale, the Gemma prompt and every string via L = tr(lang).
+  // Active UI/voice language (FR launch default), toggled by the flags. Drives
+  // STT/TTS locale, the Gemma prompt and every string via L = tr(lang).
   const [lang, setLang] = useState<Lang>("fr");
+  // Active theme (design-system, theme.ts). Persisted in SQLite; provided to the
+  // whole tree via ThemeContext. Signal is the launch default.
+  const [themeName, setThemeName] = useState<ThemeName>(DEFAULT_THEME);
+  // The bundled themed fonts must be ready before we paint text.
+  const fontsLoaded = useAppFonts();
+  // The picker (theme choice during model load) stays up until "Commencer".
+  const [started, setStarted] = useState(false);
+  // Settings overlay (reached from the home ⚙ button).
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const [modelStatus, setModelStatus] = useState<ModelStatus>("unloaded");
   const [loadPct, setLoadPct] = useState(0);
@@ -231,25 +238,44 @@ export default function App() {
   // (callbacks + render) for both on-screen text and TTS feedback.
   const L = tr(lang);
 
-  // The launch loader is the native ActivityIndicator: it's animated by the
-  // Android system, so it stays smooth even though the JS thread freezes in
-  // bursts while llama loads the ~3 GB model file (RN's own Animated would
-  // stutter during those freezes).
+  // The active theme + its context value. setTheme persists the choice.
+  const theme = THEMES[themeName];
+  const setTheme = (n: ThemeName) => {
+    setThemeName(n);
+    setSetting("theme", n).catch(() => {});
+  };
+  const themeCtx = useMemo(
+    () => ({ theme, name: themeName, setTheme }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [themeName],
+  );
+  const styles = useMemo(() => makeStyles(theme), [theme]);
+
+  // Language change that also persists the choice.
+  const changeLang = (l: Lang) => {
+    setLang(l);
+    setSetting("lang", l).catch(() => {});
+  };
+
+  // Launch overdue check fires once, after the user taps "Commencer" (so the
+  // alert doesn't talk over the loading announcements).
   const warmAnnounced = useRef(false);
-  // Launch overdue check fires once, after the model is ready (so the alert
-  // doesn't talk over the loading announcements).
   const launchAlerted = useRef(false);
 
   // Load every row; displayedTasks decides open-vs-status per the display spec
   // (so an explicit ÉTAT filter like "accomplies" can surface done/archived).
   const refreshTasks = async () => setTasks(await listTasks("all"));
 
-  // On launch: open the DB, then auto-load Gemma 4 (with progress) so the model
-  // is ready without any manual step — relaunching the app re-loads it.
+  // On launch: open the DB, restore saved theme/language, then auto-load Gemma 4
+  // (with progress) so the model is ready without any manual step.
   useEffect(() => {
     (async () => {
       try {
         await initDb();
+        const savedTheme = await getSetting("theme");
+        if (isThemeName(savedTheme)) setThemeName(savedTheme);
+        const savedLang = await getSetting("lang");
+        if (savedLang === "fr" || savedLang === "en") setLang(savedLang);
         await refreshTasks();
       } catch (e: any) {
         addLog(`✗ db init: ${e?.message ?? e}`);
@@ -337,8 +363,9 @@ export default function App() {
       setIntentPerf(`chargé en ${(ms / 1000).toFixed(1)}s`);
       addLog(`✓ prêt (${(ms / 1000).toFixed(1)}s)`);
       console.log(`[KAIROS] model ready in ${ms}ms`);
-      // PTT now visible: tell the user how to use it (once — loadGemma runs once).
-      speak(L.holdButton);
+      // The "hold to speak" cue is spoken when the user taps "Commencer" and the
+      // orb actually appears (handleStart) — not here, where the Picker is still
+      // on screen.
     } catch (e: any) {
       setModelStatus("error");
       addLog(`✗ load model: ${e?.message ?? e}`);
@@ -760,11 +787,11 @@ export default function App() {
     return !Number.isNaN(ms) && ms < Date.now();
   });
 
-  // On launch (once the model is ready), proactively flag overdue tasks: speak a
-  // concise alert and open the "en retard" list so they're immediately
+  // On launch (once the user taps "Commencer"), proactively flag overdue tasks:
+  // speak a concise alert and open the "en retard" list so they're immediately
   // actionable. Runs once per launch; silent when nothing is overdue.
   useEffect(() => {
-    if (modelStatus !== "ready" || launchAlerted.current) return;
+    if (!started || launchAlerted.current) return;
     launchAlerted.current = true;
     if (overdue.length === 0) return;
     const n = overdue.length;
@@ -781,7 +808,7 @@ export default function App() {
     setSummaryEmoji("⏰");
     speak(msg);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modelStatus, overdue]);
+  }, [started, overdue]);
 
   // What's currently on screen, in order, is what gets numbered — and a number
   // is how the user CRUDs on a task ("supprime la 2"). Disambiguation
@@ -873,510 +900,508 @@ export default function App() {
     return bits.filter(Boolean).join(" · ");
   })();
 
-  // The logo doubles as the push-to-talk button once the model is ready: hold
-  // to listen. A colored halo appears while listening (green) or speaking (blue).
-  // Disabled while an utterance is still being understood/displayed (processing)
+  // Presentational due colour bucket (README dueKind): overdue → danger,
+  // due within 24 h → soon (accent2), otherwise → accent.
+  const dueColor = (t: Task): string => {
+    const ms = parseIso(t.due_iso);
+    if (Number.isNaN(ms)) return theme.muted;
+    const now = Date.now();
+    if (ms < now) return theme.danger;
+    if (ms < now + 24 * 3600 * 1000) return theme.accent2;
+    return theme.accent;
+  };
+  // What the due column shows: a status badge (pending/postponed) else the time.
+  const dueText = (t: Task): string =>
+    L.statusBadge[t.status]
+      ? (L.statusBadge[t.status] as string)
+      : t.due_iso
+        ? fmtWhen(t.due_iso)
+        : (t.due ?? "");
+  const dueTextColor = (t: Task): string =>
+    L.statusBadge[t.status] ? theme.accent2 : dueColor(t);
+
+  // The orb's visual voice state, derived from the pipeline status.
+  const orbVState: OrbVState =
+    status === "listening" ? "listening" : processing ? "understanding" : "idle";
+  const orbLabel =
+    status === "listening"
+      ? L.orbHoldListening
+      : processing
+        ? L.orbUnderstanding
+        : L.orbHoldIdle;
+  const orbSub = status === "listening" ? L.orbSubListening : L.orbSub;
+
+  // The orb doubles as the push-to-talk button once ready: hold to listen. It is
+  // disabled while an utterance is still being understood/displayed (processing)
   // so a new command can't start before the current one is fully resolved.
-  const renderTalk = (size: number) => {
-    const ring = size + 30;
-    return (
-      <Pressable
-        onPressIn={startListening}
-        onPressOut={stopListening}
-        disabled={processing}
-        hitSlop={12}
-        style={({ pressed }) => [
-          styles.talkBtn,
-          pressed && styles.talkPressed,
-          processing && styles.talkBtnDisabled,
-        ]}
-      >
-        {/* Circle around the logo: blue by default, green while listening. */}
-        <View
-          style={[
-            styles.talkRing,
-            { width: ring, height: ring, borderRadius: ring / 2 },
-            status === "listening" && styles.talkRingListening,
-          ]}
-        />
-        <Image
-          source={LOGO}
-          style={{ width: size, height: size }}
-          resizeMode="contain"
-        />
-      </Pressable>
-    );
+  const renderTalk = (size: number) => (
+    <Pressable
+      onPressIn={startListening}
+      onPressOut={stopListening}
+      disabled={processing}
+      hitSlop={12}
+      style={({ pressed }) => ({
+        opacity: processing ? 0.5 : pressed ? 0.85 : 1,
+      })}
+    >
+      <Orb theme={theme} vState={orbVState} size={size} />
+    </Pressable>
+  );
+
+  // Nav from the home header.
+  const openList = () =>
+    setDisplay({
+      scope: "all",
+      category: null,
+      person: null,
+      place: null,
+      status: null,
+      urgent: false,
+    });
+  const openCalendar = () =>
+    setCalendar({ range: "week", anchor: new Date() });
+
+  // "Commencer" leaves the picker for the home orb; announce the push-to-talk
+  // cue now that the orb is actually on screen.
+  const handleStart = () => {
+    setStarted(true);
+    speak(L.holdButton);
   };
 
-  // Launch screen: nothing but the centered logo with a circular loader around
-  // it while Gemma loads (and a tap-to-retry affordance if the load failed).
-  if (modelStatus !== "ready") {
-    return (
-      <View style={styles.screen}>
-        <StatusBar style="dark" />
-        <View style={styles.splash}>
-          <View style={styles.ringWrap}>
-            {/* The native spinner draws its arc in the TOP of its own box, so
-                centering the view leaves the circle above the logo. Nudge the
-                spinner down so the circle's center lands on the logo. */}
-            <View style={styles.spinnerWrap}>
-              <ActivityIndicator
-                size="large"
-                color="#2f6fed"
-                style={styles.loaderSpin}
-              />
-            </View>
-            <View style={styles.loaderWrap}>
-              <Image source={LOGO} style={styles.logo} resizeMode="contain" />
-            </View>
-            {/* Below the circle: percentage, replaced by a wait message at 100%
-                (the model is then warming up). */}
-            {modelStatus !== "error" && (
-              <View style={styles.pctWrap}>
-                <Text style={styles.loadPct}>
-                  {loadPct >= 100 ? L.justAMoment : `${loadPct}%`}
-                </Text>
-              </View>
-            )}
-          </View>
-          {modelStatus === "error" && (
-            <Pressable onPress={loadGemma} style={styles.errorBanner}>
-              <Text style={styles.errorText}>{L.loadFailed}</Text>
-            </Pressable>
-          )}
-        </View>
-      </View>
-    );
-  }
+  const runTest = () => {
+    const phrases = TEST_PHRASES[lang];
+    const phrase = phrases[testIdx % phrases.length];
+    setTestIdx((i) => i + 1);
+    runIntent(phrase);
+  };
 
-  // Graphical calendar overlay (landscape) — focused full-screen view. Zoom is
-  // controlled from here: tap-to-drill and the ± buttons report (range, anchor)
-  // via onNavigate; renderTalk hands the calendar its own push-to-talk so voice
-  // zoom works while it's full-screen.
-  if (calendar) {
-    return (
+  // Top summary panel: visual echo of the current intent (listening →
+  // understanding → result). Shown whenever the voice loop is active.
+  const panelActive = status === "listening" || processing || !!summary;
+  const voicePanel = panelActive ? (
+    <View style={styles.panel}>
+      {heard ? (
+        <Text style={styles.panelHeard} numberOfLines={1}>
+          « {heard} »
+        </Text>
+      ) : null}
+      <View style={styles.panelRow}>
+        {!processing && status !== "listening" && summaryEmoji ? (
+          <Text style={styles.panelEmoji}>{summaryEmoji}</Text>
+        ) : null}
+        <Text style={styles.panelText} numberOfLines={2}>
+          {status === "listening" && !processing
+            ? L.listeningShort
+            : processing
+              ? L.understanding
+              : summary}
+        </Text>
+      </View>
+      {!processing && status !== "listening" && summary && lastRevert ? (
+        <Text style={styles.panelHint}>{L.undoHint}</Text>
+      ) : null}
+    </View>
+  ) : null;
+
+  // A single task row (list + candidates).
+  const taskRow = (t: Task) => (
+    <View key={t.id} style={styles.taskRow}>
+      <Text style={styles.taskNum}>{numberOf.get(t.id)}</Text>
+      <Text style={styles.taskEmoji}>{taskEmoji(t.category, t.title)}</Text>
+      <View style={styles.taskMain}>
+        <View style={styles.taskTitleRow}>
+          <Text style={styles.taskTitle} numberOfLines={1}>
+            {t.title}
+          </Text>
+          {(t.priority ?? 0) >= 2 ? <View style={styles.urgentDot} /> : null}
+        </View>
+        {t.note ? (
+          <Text style={styles.taskNote} numberOfLines={3}>
+            📝 {t.note}
+          </Text>
+        ) : null}
+      </View>
+      <Text style={[styles.taskDue, { color: dueTextColor(t) }]}>{dueText(t)}</Text>
+    </View>
+  );
+
+  // ── Screen content (wrapped once in the theme provider below) ──
+  let content: ReactNode;
+  if (!fontsLoaded) {
+    // Brief blank (themed) frame while the bundled fonts load.
+    content = <View style={{ flex: 1, backgroundColor: theme.bg }} />;
+  } else if (!started) {
+    // Theme picker + model loading (design 5.1).
+    content = (
+      <Picker
+        lang={lang}
+        setLang={changeLang}
+        L={L}
+        loadPct={loadPct}
+        ready={modelStatus === "ready"}
+        error={modelStatus === "error"}
+        onStart={handleStart}
+        onRetry={loadGemma}
+      />
+    );
+  } else if (settingsOpen) {
+    content = (
+      <Settings
+        lang={lang}
+        setLang={changeLang}
+        ttsOn={ttsOn}
+        setTtsOn={setTtsOn}
+        onClose={() => setSettingsOpen(false)}
+        L={L}
+      />
+    );
+  } else if (calendar) {
+    // Graphical calendar overlay (landscape) — focused full-screen view.
+    content = (
       <CalendarView
         range={calendar.range}
         anchor={calendar.anchor}
         tasks={tasks}
         lang={lang}
+        theme={theme}
         onNavigate={(range, anchor) => setCalendar({ range, anchor })}
         renderTalk={renderTalk}
         onClose={() => setCalendar(null)}
       />
     );
-  }
-
-  return (
-    <View style={styles.screen}>
-      <StatusBar style="dark" />
-
-      {/* Top summary panel: visual echo of the current intent (replaced on each
-          new utterance — listening → understanding → result). */}
-      {(status === "listening" || processing || summary) && (
-        <View style={styles.topNote}>
-          {heard ? (
-            <Text style={styles.topNoteHeard} numberOfLines={1}>
-              « {heard} »
-            </Text>
-          ) : null}
-          <View style={styles.topNoteRow}>
-            {!processing && status !== "listening" && summaryEmoji ? (
-              <Text style={styles.topNoteEmoji}>{summaryEmoji}</Text>
-            ) : null}
-            <Text style={styles.topNoteSummary} numberOfLines={2}>
-              {status === "listening" && !processing
-                ? L.listeningShort
-                : processing
-                  ? L.understanding
-                  : summary}
-            </Text>
+  } else if (candidates) {
+    // Ambiguous reference: numbered candidates, pick one by number/voice.
+    content = (
+      <View style={styles.screen}>
+        <View style={styles.pageHeader}>
+          <Text style={styles.pageTitle}>{L.whichOne}</Text>
+          <Pressable
+            onPress={() => {
+              setCandidates(null);
+              setPending(null);
+            }}
+            hitSlop={10}
+          >
+            <Text style={styles.closeBtn}>{L.cancelBtn}</Text>
+          </Pressable>
+        </View>
+        {voicePanel}
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={styles.container}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.taskCard}>{candidates.map(taskRow)}</View>
+        </ScrollView>
+        <View style={styles.dockTalk}>{renderTalk(56)}</View>
+      </View>
+    );
+  } else if (display === null) {
+    // Home: header + voice orb + upcoming agenda.
+    content = (
+      <View style={styles.screen}>
+        <View style={styles.header}>
+          <View style={styles.brand}>
+            <LogoMark theme={theme} size={26} />
+            <Text style={styles.brandName}>Kairos</Text>
+          </View>
+          <View style={styles.headerCluster}>
+            <LangToggle lang={lang} onChange={changeLang} />
+            <Pressable style={styles.navBtn} onPress={openList} hitSlop={6}>
+              <Text style={styles.navIcon}>☰</Text>
+            </Pressable>
+            <Pressable style={styles.navBtn} onPress={openCalendar} hitSlop={6}>
+              <Text style={styles.navIcon}>▦</Text>
+            </Pressable>
+            <Pressable
+              style={styles.navBtn}
+              onPress={() => setSettingsOpen(true)}
+              hitSlop={6}
+            >
+              <Text style={styles.navIcon}>⚙</Text>
+            </Pressable>
           </View>
         </View>
-      )}
 
-      {candidates ? (
-        // Ambiguous reference: numbered candidates, pick one by number/voice.
-        <>
-          <ScrollView
-            style={styles.scroll}
-            contentContainerStyle={styles.container}
-            keyboardShouldPersistTaps="handled"
-          >
-            <View style={styles.tasksHeaderRow}>
-              <Text style={styles.sectionTitle}>{L.whichOne}</Text>
-              <Pressable
-                onPress={() => {
-                  setCandidates(null);
-                  setPending(null);
-                }}
-                hitSlop={10}
-              >
-                <Text style={styles.hideBtn}>{L.cancelBtn}</Text>
-              </Pressable>
-            </View>
-            <View style={styles.tasksBox}>
-              {candidates.map((t) => (
-                <View key={t.id} style={styles.taskRow}>
-                  <Text style={styles.taskNum}>{numberOf.get(t.id)}</Text>
-                  <View style={styles.taskMain}>
-                    <Text style={styles.taskTitle}>{t.title}</Text>
-                    {t.note ? (
-                      <Text style={styles.taskNote} numberOfLines={2}>
-                        📝 {t.note}
-                      </Text>
-                    ) : null}
-                  </View>
-                  <Text style={styles.taskDue}>
-                    {t.due_iso ? fmtWhen(t.due_iso) : (t.due ?? "")}
-                  </Text>
-                </View>
-              ))}
-            </View>
-          </ScrollView>
-          <View style={styles.dockTalk}>{renderTalk(54)}</View>
-        </>
-      ) : display === null ? (
-        // Home: the logo is the push-to-talk button, with a live mini agenda
-        // of upcoming tasks below it (fed as the user issues commands).
+        {voicePanel}
+
         <View style={styles.homeCenter}>
-          {renderTalk(LOGO_SIZE)}
-          {upcoming.length > 0 && (
-            <View style={styles.miniPlan}>
-              <Text style={styles.miniHeader}>{L.upcoming}</Text>
-              {upcoming.map((t) => (
-                <View key={t.id} style={styles.miniRow}>
-                  <Text style={styles.miniNum}>{numberOf.get(t.id)}</Text>
-                  <Text style={styles.miniEmoji}>
-                    {taskEmoji(t.category, t.title)}
-                  </Text>
-                  <Text style={styles.miniTitle} numberOfLines={1}>
-                    {t.title}
-                  </Text>
-                  {t.note ? <Text style={styles.miniNoteMark}>📝</Text> : null}
-                  <Text style={styles.miniDue}>
-                    {t.due_iso ? fmtWhen(t.due_iso) : (t.due ?? "")}
-                  </Text>
-                </View>
-              ))}
-            </View>
-          )}
+          {renderTalk(ORB_SIZE)}
+          <Text style={styles.orbLabel}>{orbLabel}</Text>
+          <Text style={styles.orbSub}>{orbSub}</Text>
         </View>
-      ) : (
-        // A system command showed tasks: list them, keep talk available below.
-        <>
-          <ScrollView
-            style={styles.scroll}
-            contentContainerStyle={styles.container}
-            keyboardShouldPersistTaps="handled"
-          >
-            <View style={styles.tasksHeaderRow}>
-              <Text style={styles.sectionTitle}>{displayTitle}</Text>
-              <Pressable onPress={() => setDisplay(null)} hitSlop={10}>
-                <Text style={styles.hideBtn}>{L.hideBtn}</Text>
-              </Pressable>
-            </View>
 
-            {displayedTasks.length === 0 ? (
-              <View style={styles.tasksBox}>
-                <Text style={styles.taskEmpty}>
-                  {display.scope === "overdue"
-                    ? L.nothingOverdue
-                    : L.noTasksCriteria}
+        {upcoming.length > 0 && (
+          <View style={styles.upcomingWrap}>
+            <Text style={styles.upcomingHeader}>{L.upcoming}</Text>
+            {upcoming.map((t) => (
+              <View key={t.id} style={styles.miniRow}>
+                <Text style={styles.miniNum}>{numberOf.get(t.id)}</Text>
+                <Text style={styles.miniEmoji}>
+                  {taskEmoji(t.category, t.title)}
+                </Text>
+                <Text style={styles.miniTitle} numberOfLines={1}>
+                  {t.title}
+                </Text>
+                {t.note ? <Text style={styles.miniNoteMark}>📝</Text> : null}
+                <Text style={[styles.miniDue, { color: dueTextColor(t) }]}>
+                  {dueText(t)}
                 </Text>
               </View>
-            ) : (
-              // Level 1 (folders) over the level-2 (temporal) filtered set —
-              // each folder is a collapsible accordion section.
-              folders.map((f) => (
-                <View key={f.label} style={styles.folder}>
-                  <Pressable
-                    style={styles.folderHeader}
-                    onPress={() => toggleFolder(f.label)}
-                    hitSlop={6}
-                  >
-                    <Text style={styles.folderTitle}>
-                      {f.label} ({f.count})
-                    </Text>
-                    <Text style={styles.folderChevron}>
-                      {collapsed.has(f.label) ? "▸" : "▾"}
-                    </Text>
-                  </Pressable>
-                  {!collapsed.has(f.label) &&
-                    f.subs.map((s) => (
+            ))}
+          </View>
+        )}
+
+        <Pressable style={styles.testChip} onPress={runTest} hitSlop={8}>
+          <Text style={styles.testChipText}>{L.testChip}</Text>
+        </Pressable>
+      </View>
+    );
+  } else {
+    // A system command showed tasks: grouped folders, talk available below.
+    content = (
+      <View style={styles.screen}>
+        <View style={styles.pageHeader}>
+          <Text style={styles.pageTitle} numberOfLines={1}>
+            {displayTitle}
+          </Text>
+          <Pressable onPress={() => setDisplay(null)} hitSlop={10}>
+            <Text style={styles.closeBtn}>{L.closeBtn}</Text>
+          </Pressable>
+        </View>
+        {voicePanel}
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={styles.container}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {displayedTasks.length === 0 ? (
+            <View style={styles.taskCard}>
+              <Text style={styles.taskEmpty}>
+                {display.scope === "overdue"
+                  ? L.nothingOverdue
+                  : L.noTasksCriteria}
+              </Text>
+            </View>
+          ) : (
+            folders.map((f) => (
+              <View key={f.label} style={styles.folder}>
+                <Pressable
+                  style={styles.folderHeader}
+                  onPress={() => toggleFolder(f.label)}
+                  hitSlop={6}
+                >
+                  <Text style={styles.folderLabel}>{f.label}</Text>
+                  <View style={styles.folderRule} />
+                  <Text style={styles.folderCount}>{f.count}</Text>
+                  <Text style={styles.folderChevron}>
+                    {collapsed.has(f.label) ? "▸" : "▾"}
+                  </Text>
+                </Pressable>
+                {!collapsed.has(f.label) &&
+                  f.subs.map((s) => (
                     <View key={s.label || "_"}>
                       {s.label ? (
                         <Text style={styles.subfolderTitle}>{s.label}</Text>
                       ) : null}
-                      <View style={styles.tasksBox}>
-                        {s.items.map((t) => (
-                          <View key={t.id} style={styles.taskRow}>
-                            <Text style={styles.taskNum}>
-                              {numberOf.get(t.id)}
-                            </Text>
-                            <View style={styles.taskMain}>
-                              <Text style={styles.taskTitle}>{t.title}</Text>
-                              {t.note ? (
-                                <Text style={styles.taskNote} numberOfLines={3}>
-                                  📝 {t.note}
-                                </Text>
-                              ) : null}
-                            </View>
-                            <Text style={styles.taskDue}>
-                              {L.statusBadge[t.status]
-                                ? L.statusBadge[t.status]
-                                : t.due_iso
-                                  ? fmtWhen(t.due_iso)
-                                  : t.due ?? ""}
-                            </Text>
-                          </View>
-                        ))}
-                      </View>
+                      <View style={styles.taskCard}>{s.items.map(taskRow)}</View>
                     </View>
                   ))}
-                </View>
-              ))
-            )}
-          </ScrollView>
-          <View style={styles.dockTalk}>{renderTalk(54)}</View>
-        </>
-      )}
-
-      {/* Bottom bar: FR/US language flags (left) + TTS toggle + dev "Tester"
-          chip (right). The flags switch the whole app's language: UI text, TTS
-          voice, STT recognizer and the Gemma prompt. */}
-      <View style={styles.bottomBar}>
-        <View style={styles.bottomLeft}>
-          <LangToggle lang={lang} onChange={setLang} />
-          <Text style={styles.versionLabel}>{L.versionLabel}</Text>
-        </View>
-        <View style={styles.bottomRight}>
-          <View style={styles.ttsToggle}>
-            <Text style={styles.ttsLabel}>TTS</Text>
-            <Switch
-              value={ttsOn}
-              onValueChange={setTtsOn}
-              trackColor={{ true: "#2f6fed", false: "#cfd4da" }}
-              thumbColor="#ffffff"
-              style={styles.ttsSwitch}
-            />
-          </View>
-          <Pressable
-            onPress={() => {
-              const phrases = TEST_PHRASES[lang];
-              const phrase = phrases[testIdx % phrases.length];
-              setTestIdx((i) => i + 1);
-              runIntent(phrase);
-            }}
-            style={styles.testChip}
-            hitSlop={8}
-          >
-            <Text style={styles.testChipText}>{L.testChip}</Text>
-          </Pressable>
-        </View>
+              </View>
+            ))
+          )}
+        </ScrollView>
+        <View style={styles.dockTalk}>{renderTalk(56)}</View>
       </View>
-    </View>
+    );
+  }
+
+  return (
+    <ThemeContext.Provider value={themeCtx}>
+      <StatusBar style={theme.dark ? "light" : "dark"} />
+      {content}
+    </ThemeContext.Provider>
   );
 }
 
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: "#edf0f4" },
-  splash: { flex: 1, alignItems: "center", justifyContent: "center" },
-  // Coordinate frame for the loader; centered on screen. The logo sits at its
-  // center, the spinner is nudged down to wrap it, the % sits near the bottom.
-  ringWrap: { width: 240, height: 240 },
-  loaderWrap: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  // Same as loaderWrap but pushed down ~57dp: the native spinner draws its arc
-  // that far above its view center, so this re-centers the circle on the logo.
-  spinnerWrap: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: "center",
-    justifyContent: "center",
-    transform: [{ translateY: 88 }],
-  },
-  loaderSpin: { transform: [{ scale: 5.2 }] },
-  // Splash logo only (the PTT logo sizes itself inline). Nudged down 3px.
-  logo: { width: LOGO_SIZE, height: LOGO_SIZE, transform: [{ translateY: 3 }] },
-  // Centered like the logo, then pushed down to sit just below the circle.
-  pctWrap: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: "center",
-    justifyContent: "center",
-    transform: [{ translateY: 26 }],
-  },
-  loadPct: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#2f6fed",
-    fontVariant: ["tabular-nums"],
-  },
-  bottomBar: {
-    paddingHorizontal: 20,
-    paddingTop: 8,
-    // Clear the Android navigation bar (48dp inset on this device) since Expo
-    // SDK 56 draws edge-to-edge by default.
-    paddingBottom: 56,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  bottomLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
-  versionLabel: { fontSize: 13, fontWeight: "600", color: "#9aa0a6" },
-  bottomRight: { flexDirection: "row", alignItems: "center", gap: 14 },
-  ttsToggle: { flexDirection: "row", alignItems: "center", gap: 4 },
-  ttsLabel: { fontSize: 12, fontWeight: "600", color: "#9aa0a6" },
-  ttsSwitch: { transform: [{ scale: 0.8 }] },
-  testChip: {
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#d7e3ff",
-    backgroundColor: "#eef3ff",
-  },
-  testChipText: { fontSize: 11, color: "#2f6fed", fontWeight: "600" },
-  // The logo IS the push-to-talk button; a halo appears while listening/speaking.
-  topNote: {
-    marginTop: 50,
-    marginHorizontal: 16,
-    padding: 12,
-    borderRadius: 14,
-    backgroundColor: "#eef3ff",
-    borderWidth: 1,
-    borderColor: "#cfe0ff",
-  },
-  topNoteHeard: {
-    fontSize: 12,
-    color: "#7a869a",
-    fontStyle: "italic",
-    marginBottom: 3,
-  },
-  topNoteRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-  topNoteEmoji: { fontSize: 22 },
-  topNoteSummary: { flex: 1, fontSize: 14, fontWeight: "600", color: "#1a1a1a" },
-  homeCenter: { flex: 1, alignItems: "center", justifyContent: "center" },
-  miniPlan: { width: "88%", marginTop: 28 },
-  miniHeader: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#9aa0a6",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-    marginBottom: 6,
-  },
-  miniRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    paddingVertical: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#e8e8e8",
-  },
-  miniNum: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#9aa0a6",
-    minWidth: 16,
-    fontVariant: ["tabular-nums"],
-  },
-  miniEmoji: { fontSize: 18 },
-  miniTitle: { flex: 1, fontSize: 14, color: "#1a1a1a" },
-  miniNoteMark: { fontSize: 11, marginRight: 2 },
-  miniDue: { fontSize: 12, color: "#2f6fed" },
-  talkBtn: { alignItems: "center", justifyContent: "center" },
-  talkPressed: { opacity: 0.85 },
-  talkBtnDisabled: { opacity: 0.4 },
-  talkRing: { position: "absolute", borderWidth: 6, borderColor: "#2f6fed" },
-  talkRingListening: { borderColor: "#2e9e5b" },
-  dockTalk: { alignItems: "center", paddingVertical: 6 },
-  errorBanner: {
-    marginTop: 16,
-    padding: 14,
-    borderRadius: 12,
-    backgroundColor: "#fdecec",
-    borderWidth: 1,
-    borderColor: "#f5c2c2",
-  },
-  errorText: { fontSize: 14, color: "#c0392b", fontWeight: "600" },
-  scroll: { flex: 1 },
-  container: {
-    backgroundColor: "#edf0f4",
-    paddingTop: 8,
-    paddingHorizontal: 20,
-    paddingBottom: 24,
-  },
-  tasksHeaderRow: {
-    marginTop: 22,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  sectionTitle: { fontSize: 17, fontWeight: "700", color: "#1a1a1a" },
-  hideBtn: { fontSize: 14, color: "#9aa0a6", fontWeight: "600" },
-  folder: { marginTop: 14 },
-  folderHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: "#1e3a8a",
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    borderRadius: 8,
-  },
-  folderChevron: { fontSize: 13, color: "#ffffff" },
-  folderTitle: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#ffffff",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  subfolderTitle: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: "#7a869a",
-    marginLeft: 6,
-    marginTop: 8,
-    marginBottom: 4,
-  },
-  tasksBox: {
-    marginTop: 8,
-    backgroundColor: "#f8fafc",
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#e2e6ec",
-    overflow: "hidden",
-  },
-  taskEmpty: { padding: 16, color: "#999", fontStyle: "italic" },
-  taskRow: {
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#eee",
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
-  },
-  taskNum: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#9aa0a6",
-    minWidth: 18,
-    fontVariant: ["tabular-nums"],
-    marginTop: 1,
-  },
-  taskMain: { flex: 1 },
-  taskTitle: { fontSize: 16, color: "#1a1a1a" },
-  taskNote: {
-    fontSize: 13,
-    color: "#5a6472",
-    fontStyle: "italic",
-    marginTop: 3,
-    lineHeight: 18,
-  },
-  taskDue: { fontSize: 13, color: "#2f6fed", marginTop: 1 },
-});
+function makeStyles(t: Theme) {
+  return StyleSheet.create({
+    screen: { flex: 1, backgroundColor: t.bg },
+
+    // ── Home header ──
+    header: {
+      paddingTop: 50,
+      paddingHorizontal: 16,
+      paddingBottom: 4,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+    },
+    brand: { flexDirection: "row", alignItems: "center", gap: 9 },
+    brandName: { fontFamily: t.display.semibold, fontSize: 17, color: t.ink },
+    headerCluster: { flexDirection: "row", alignItems: "center", gap: 9 },
+    navBtn: {
+      width: 30,
+      height: 30,
+      borderRadius: 15,
+      backgroundColor: t.surface,
+      borderWidth: 1,
+      borderColor: t.line,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    navIcon: { fontSize: 14, color: t.muted },
+
+    // ── List / candidates header ──
+    pageHeader: {
+      paddingTop: 50,
+      paddingHorizontal: 20,
+      paddingBottom: 4,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+    },
+    pageTitle: { flex: 1, fontFamily: t.display.semibold, fontSize: 20, color: t.ink },
+    closeBtn: { fontFamily: t.body.semibold, fontSize: 13, color: t.muted, marginLeft: 12 },
+
+    // ── Voice panel ──
+    panel: {
+      marginTop: 13,
+      marginHorizontal: 16,
+      paddingVertical: 13,
+      paddingHorizontal: 14,
+      borderRadius: 16,
+      backgroundColor: t.panelBg,
+      borderWidth: 1,
+      borderColor: t.panelBorder,
+    },
+    panelHeard: {
+      fontFamily: t.body.regular,
+      fontSize: 12,
+      color: t.muted,
+      fontStyle: "italic",
+      marginBottom: 4,
+    },
+    panelRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+    panelEmoji: { fontSize: 19 },
+    panelText: { flex: 1, fontFamily: t.body.semibold, fontSize: 14, color: t.ink },
+    panelHint: { fontFamily: t.body.regular, fontSize: 11, color: t.muted, marginTop: 6 },
+
+    // ── Home center (orb) ──
+    homeCenter: { flex: 1, alignItems: "center", justifyContent: "center" },
+    orbLabel: { fontFamily: t.display.semibold, fontSize: 17, color: t.ink, marginTop: 18 },
+    orbSub: { fontFamily: t.body.regular, fontSize: 12.5, color: t.muted, marginTop: 4 },
+
+    // ── Upcoming agenda ──
+    upcomingWrap: { paddingHorizontal: 22, paddingBottom: 40 },
+    upcomingHeader: {
+      fontFamily: t.body.bold,
+      fontSize: 11,
+      letterSpacing: 1.3,
+      textTransform: "uppercase",
+      color: t.muted,
+      marginBottom: 4,
+    },
+    miniRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+      paddingVertical: 9,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: t.line,
+    },
+    miniNum: {
+      fontFamily: t.body.bold,
+      fontSize: 12,
+      color: t.muted,
+      minWidth: 14,
+      fontVariant: ["tabular-nums"],
+    },
+    miniEmoji: { fontSize: 16 },
+    miniTitle: { flex: 1, fontFamily: t.body.regular, fontSize: 14.5, color: t.ink },
+    miniNoteMark: { fontSize: 11, marginRight: 2 },
+    miniDue: { fontFamily: t.body.semibold, fontSize: 12.5 },
+
+    // ── Test chip (dev) ──
+    testChip: {
+      position: "absolute",
+      left: 16,
+      bottom: 54,
+      paddingVertical: 4,
+      paddingHorizontal: 10,
+      borderRadius: 999,
+      borderWidth: 1,
+      borderColor: t.line,
+      backgroundColor: t.surface,
+    },
+    testChipText: { fontFamily: t.body.semibold, fontSize: 11, color: t.muted },
+
+    // ── Task list ──
+    scroll: { flex: 1 },
+    container: { paddingTop: 6, paddingHorizontal: 20, paddingBottom: 20 },
+    folder: { marginTop: 16 },
+    folderHeader: { flexDirection: "row", alignItems: "center", gap: 8 },
+    folderLabel: {
+      fontFamily: t.display.semibold,
+      fontSize: 11,
+      letterSpacing: 0.8,
+      textTransform: "uppercase",
+      color: t.accent,
+    },
+    folderRule: { flex: 1, height: 1, backgroundColor: t.line },
+    folderCount: { fontFamily: t.body.regular, fontSize: 11, color: t.muted },
+    folderChevron: { fontSize: 12, color: t.muted },
+    subfolderTitle: {
+      fontFamily: t.body.semibold,
+      fontSize: 12,
+      color: t.muted,
+      marginLeft: 4,
+      marginTop: 8,
+      marginBottom: 2,
+    },
+    taskCard: {
+      marginTop: 8,
+      backgroundColor: t.surface,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: t.line,
+      overflow: "hidden",
+    },
+    taskEmpty: { padding: 16, fontFamily: t.body.regular, color: t.muted, fontStyle: "italic" },
+    taskRow: {
+      paddingVertical: 11,
+      paddingHorizontal: 13,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: t.line,
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: 9,
+    },
+    taskNum: {
+      fontFamily: t.body.bold,
+      fontSize: 12,
+      color: t.muted,
+      minWidth: 14,
+      fontVariant: ["tabular-nums"],
+      marginTop: 2,
+    },
+    taskEmoji: { fontSize: 15, marginTop: 1 },
+    taskMain: { flex: 1 },
+    taskTitleRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+    taskTitle: { flexShrink: 1, fontFamily: t.body.medium, fontSize: 14.5, color: t.ink },
+    urgentDot: { width: 7, height: 7, borderRadius: 3.5, backgroundColor: t.danger },
+    taskNote: {
+      fontFamily: t.body.regular,
+      fontSize: 12,
+      color: t.muted,
+      fontStyle: "italic",
+      marginTop: 3,
+      lineHeight: 17,
+    },
+    taskDue: { fontFamily: t.body.semibold, fontSize: 12.5, marginTop: 1 },
+
+    dockTalk: { alignItems: "center", paddingVertical: 8, paddingBottom: 40 },
+  });
+}

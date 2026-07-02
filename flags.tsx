@@ -1,5 +1,6 @@
 import { Pressable, StyleSheet, View } from "react-native";
 import type { Lang } from "./i18n";
+import { useTheme } from "./ThemeContext";
 
 // Flags are drawn with plain Views (not emoji): Android's system font has no
 // regional-indicator flag glyphs, so 🇫🇷/🇺🇸 would render as "FR"/"US" letter
@@ -55,19 +56,23 @@ export function LangToggle({
   lang: Lang;
   onChange: (l: Lang) => void;
 }) {
+  const { theme } = useTheme();
+  // Active pill background follows the theme (so it reads on the dark On-Device
+  // surface); the national flag colours themselves stay fixed.
+  const active = [styles.active, { backgroundColor: theme.chipBg }];
   return (
     <View style={styles.toggle}>
       <Pressable
         onPress={() => onChange("fr")}
         hitSlop={8}
-        style={[styles.slot, lang === "fr" ? styles.active : styles.inactive]}
+        style={[styles.slot, lang === "fr" ? active : styles.inactive]}
       >
         <FrFlag w={24} />
       </Pressable>
       <Pressable
         onPress={() => onChange("en")}
         hitSlop={8}
-        style={[styles.slot, lang === "en" ? styles.active : styles.inactive]}
+        style={[styles.slot, lang === "en" ? active : styles.inactive]}
       >
         <UsFlag w={24} />
       </Pressable>
@@ -95,6 +100,6 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 4,
   },
-  active: { opacity: 1, backgroundColor: "#e7eefc" },
+  active: { opacity: 1 },
   inactive: { opacity: 0.4 },
 });
