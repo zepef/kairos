@@ -148,7 +148,7 @@ function makeStyles(t: Theme) {
       justifyContent: "center",
     },
     checkMark: { color: t.bg, fontSize: 13, fontFamily: t.body.bold },
-    footer: { paddingHorizontal: 20, paddingBottom: 40, paddingTop: 8 },
+    footer: { paddingHorizontal: 20, paddingBottom: 45, paddingTop: 8 },
     progRow: {
       flexDirection: "row",
       alignItems: "center",
