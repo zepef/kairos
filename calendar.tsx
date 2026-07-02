@@ -566,7 +566,7 @@ function makeStyles(t: Theme) {
       position: "absolute",
       left: 0,
       right: 0,
-      bottom: 21,
+      bottom: 23,
       alignItems: "center",
     },
     chip: {

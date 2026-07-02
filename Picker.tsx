@@ -148,12 +148,12 @@ function makeStyles(t: Theme) {
       justifyContent: "center",
     },
     checkMark: { color: t.bg, fontSize: 13, fontFamily: t.body.bold },
-    footer: { paddingHorizontal: 20, paddingBottom: 45, paddingTop: 8 },
+    footer: { paddingHorizontal: 20, paddingBottom: 47, paddingTop: 8 },
     progRow: {
       flexDirection: "row",
       alignItems: "center",
       justifyContent: "space-between",
-      marginBottom: 8,
+      marginBottom: 6, // -2px: remonte la barre de chargement + le message en dessous
     },
     progLabel: { fontFamily: t.body.regular, fontSize: 12, color: t.muted },
     progPct: {

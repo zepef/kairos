@@ -1328,7 +1328,7 @@ function makeStyles(t: Theme) {
     testChip: {
       position: "absolute",
       left: 16,
-      bottom: 59,
+      bottom: 61,
       paddingVertical: 4,
       paddingHorizontal: 10,
       borderRadius: 999,
@@ -1402,6 +1402,6 @@ function makeStyles(t: Theme) {
     },
     taskDue: { fontFamily: t.body.semibold, fontSize: 12.5, marginTop: 1 },
 
-    dockTalk: { alignItems: "center", paddingVertical: 8, paddingBottom: 45 },
+    dockTalk: { alignItems: "center", paddingVertical: 8, paddingBottom: 47 },
   });
 }
