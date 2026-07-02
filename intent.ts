@@ -30,6 +30,18 @@ function parseIso(iso: unknown): number {
   ).getTime();
 }
 
+// Same calendar day? (used to disambiguate a reschedule by its OLD date.)
+function sameDayMs(a: number, b: number): boolean {
+  if (Number.isNaN(a) || Number.isNaN(b)) return false;
+  const da = new Date(a);
+  const db = new Date(b);
+  return (
+    da.getFullYear() === db.getFullYear() &&
+    da.getMonth() === db.getMonth() &&
+    da.getDate() === db.getDate()
+  );
+}
+
 // J4: turn Gemma's JSON action into a real DB mutation / view change + a spoken
 // confirmation. Two intent families: data (createTask/setStatus) and system
 // (showTasks — only these put anything on screen, voice-first by design).
@@ -344,7 +356,35 @@ export async function dispatch(
         };
         break;
       }
-      const { task, candidates } = await resolveTarget(obj, transcript, numberedIds);
+      let { task, candidates } = await resolveTarget(obj, transcript, numberedIds);
+      // Reschedule disambiguation: a "move from <old> to <new>" carries the OLD
+      // date-time in fromISO — use it to pick the right appointment among same-
+      // title matches (e.g. several "coiffeur" on different days) instead of
+      // asking "which one?" when the day already singles it out.
+      // Accept fromISO at the root (as instructed) or nested in changes (a small
+      // model may put it there); it never reaches the DB either way.
+      const fromISO =
+        typeof obj.fromISO === "string"
+          ? obj.fromISO
+          : typeof obj.changes?.fromISO === "string"
+            ? obj.changes.fromISO
+            : undefined;
+      if (!task && candidates.length > 1 && fromISO) {
+        const fromMs = parseIso(fromISO);
+        if (!Number.isNaN(fromMs)) {
+          const exact = candidates.filter((c) => parseIso(c.due_iso) === fromMs);
+          const sameDay = candidates.filter((c) =>
+            sameDayMs(parseIso(c.due_iso), fromMs),
+          );
+          const narrowed = exact.length === 1 ? exact : sameDay;
+          if (narrowed.length === 1) {
+            task = narrowed[0];
+            candidates = narrowed;
+          } else if (narrowed.length > 1) {
+            candidates = narrowed;
+          }
+        }
+      }
       if (task) {
         const t0 = task as any;
         const before: Record<string, unknown> = {};

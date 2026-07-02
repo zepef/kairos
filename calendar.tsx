@@ -580,10 +580,8 @@ function makeStyles(t: Theme) {
     // the empty area so the calendar underneath stays interactive.
     talkDock: {
       position: "absolute",
-      left: 0,
-      right: 0,
+      right: 16,
       bottom: 23,
-      alignItems: "center",
     },
     chip: {
       backgroundColor: t.chipBg,
