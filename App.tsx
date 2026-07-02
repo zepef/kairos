@@ -1328,7 +1328,7 @@ function makeStyles(t: Theme) {
     testChip: {
       position: "absolute",
       left: 16,
-      bottom: 61,
+      bottom: 0, // tout en bas: peut passer sous la bande système du S96; reste accessible même si peu visible
       paddingVertical: 4,
       paddingHorizontal: 10,
       borderRadius: 999,
