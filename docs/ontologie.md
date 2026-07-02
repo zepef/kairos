@@ -77,7 +77,7 @@ Toute parole tombe dans une **intention** (`tool`). Trois familles :
 
 ### 4.1 Commandes de **données** (mutations) — CRUD complet
 - **Créer** (`createTask`) → titre + échéance + dossier/sous-dossier + priorité + personne + lieu (déduits).
-- **Modifier** (`updateTask`) → change un ou plusieurs attributs d'une tâche existante (`changes` partiels) : replanifier (`due`/`dueISO`), déplacer (`category`), renommer (`title`), réaffecter (`person`/`place`), reprioriser (`priority`).
+- **Modifier** (`updateTask`) → change un ou plusieurs attributs d'une tâche existante (`changes` partiels) : **replanifier / reprogrammer** dans le temps (`due`/`dueISO`), **déplacer entre dossiers** (`category`, uniquement si un dossier est nommé), renommer (`title`), réaffecter (`person`/`place`), reprioriser (`priority`). Reprogrammer un RDV « **du** 7 juillet **au** 8 juillet **de** 8h15 **à** 9h30 » : la 1re date-heure **identifie** le RDV, seule la **2de** devient la nouvelle échéance (jamais un événement multi-jours ni un changement de dossier ; `title` = « coiffeur », jamais la date).
 - **Changer le statut** (`setStatus`) → done / pending / postponed / archived / todo (cas particulier d'Update, verbe distinct).
 - **Supprimer** (`deleteTask`) → suppression réelle d'**une** tâche, mais **réversible** via « annule ».
 - **Supprimer en groupe** (`deleteTasks`) → supprime **plusieurs** tâches d'un coup : soit une liste de **numéros** affichés (« supprime les 1, 3 et 5 »), soit **toutes les tâches d'une journée** (« efface toutes les tâches de lundi » → `dayISO`). Réversible **en bloc** par un seul « annule ».
@@ -151,7 +151,8 @@ Gemma est le **traducteur d'ontologie** : il fait correspondre une formulation l
 | « affiche le calendrier [du jour / hebdomadaire / mensuel / annuel] » | `showCalendar` | `range` = day/week/month/year (paysage) |
 | « zoome / zoom avant », « dézoome / zoom arrière » | `zoomCalendar` | `in` (plus de détail) / `out` (plus large) sur le calendrier ouvert |
 | « reporte la 2 à mardi 15h », « renomme la 1 en… » | `updateTask` | `changes` partiels ; référence par **numéro** |
-| « range / **déplace** / bouge / transfère / classe la 2 dans (vers) Santé » | `updateTask` | `changes.category` (+ `subcategory`) — déplacement entre dossiers |
+| « range / **déplace** / bouge / transfère / classe la 2 dans (vers) le dossier Santé » | `updateTask` | `changes.category` (+ `subcategory`) — déplacement entre **dossiers** (uniquement si un dossier est nommé) |
+| « **déplace / reprogramme** le RDV coiffeur **du** 7 juillet **au** 8 juillet **de** 8h15 **à** 9h30 » | `updateTask` | reprogrammation dans le **temps** : `changes.due`/`dueISO` = la **nouvelle** date-heure ; la 1re identifie le RDV (`title` = « coiffeur »), jamais de date en `category` |
 | « supprime la 3 », « efface X » | `deleteTask` | UNE tâche ; réversible via « annule » |
 | « supprime les tâches 1, 3 et 5 », « efface toutes les tâches de lundi / d'aujourd'hui » | `deleteTasks` | plusieurs (par `numbers`) ou toute une journée (`dayISO`) ; réversible en bloc |
 | « ajoute une note à la 2 », « note sur la 3 : apporter le dossier », « remplace la note de la 1 » | `addNote` | note dictée inline (`note`) ou en deux temps (capture de la phrase suivante) ; **remplace** ; référence par **numéro** |

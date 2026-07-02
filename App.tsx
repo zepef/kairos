@@ -75,6 +75,8 @@ const TEST_PHRASES: Record<Lang, string[]> = {
     "complète la note de la 1 : et prévoir le parking",
     "déplace la 1 dans le dossier Travail",
     "lis la note de la 1",
+    "ajoute rendez-vous coiffeur le 7 juillet à 8h15",
+    "déplace le rendez-vous coiffeur du 7 juillet au 8 juillet de 8h15 à 9h30",
   ],
   en: [
     "add call Paul tomorrow 10am at the office, it's urgent",
@@ -96,6 +98,8 @@ const TEST_PHRASES: Record<Lang, string[]> = {
     "append to the note of 1: and plan for parking",
     "move 1 to the Work folder",
     "read the note of 1",
+    "add hairdresser appointment on July 7 at 8:15",
+    "move the hairdresser appointment from July 7 to July 8, from 8:15 to 9:30",
   ],
 };
 
