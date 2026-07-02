@@ -347,6 +347,20 @@ export async function dispatch(
     case "updateTask":
     case "editTask": {
       const changes = buildChanges(obj);
+      // A reschedule must move due_iso (the ISO used EVERYWHERE for dates), not
+      // just the spoken `due`. The small model reliably fills ROOT ISO fields
+      // (createTask's dueISO, the reschedule fromISO/toISO) but often omits the
+      // nested changes.dueISO — which left due_iso stale, so the task never
+      // actually moved (only the spoken text did). Backfill from root toISO/dueISO.
+      if (!("due_iso" in changes)) {
+        const rootIso =
+          typeof obj.toISO === "string"
+            ? obj.toISO
+            : typeof obj.dueISO === "string"
+              ? obj.dueISO
+              : null;
+        if (rootIso) changes.due_iso = rootIso;
+      }
       if (Object.keys(changes).length === 0) {
         out = {
           ok: false,
