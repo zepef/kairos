@@ -1,4 +1,10 @@
-<!-- Language: **English** · [Français](README.fr.md) -->
+<p align="center">
+  <a href="README.md"><img src="public/kairos-en.png" alt="Read in English" width="410"></a>
+  &nbsp;&nbsp;
+  <a href="README.fr.md"><img src="public/kairos-fr.png" alt="Lire en français" width="410"></a>
+</p>
+
+<p align="center"><b>English</b> · <a href="README.fr.md">Français</a></p>
 
 # Kairos
 
