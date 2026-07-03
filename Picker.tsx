@@ -5,7 +5,16 @@
 //
 // The voice/model logic stays in App; this screen only reflects loadPct + a
 // ready/error flag and reports theme/lang/start via callbacks.
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import {
+  Animated,
+  Easing,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useTheme } from "./ThemeContext";
 import { THEMES, THEME_ORDER, type Theme } from "./theme";
@@ -85,21 +94,77 @@ export default function Picker({
         ) : (
           <>
             <View style={s.progRow}>
-              <Text style={s.progLabel}>{L.pickerLoading}</Text>
-              <Text style={s.progPct}>{loadPct}%</Text>
+              <Text style={s.progLabel}>
+                {loadPct < 100 ? L.pickerLoading : L.pickerWarmup}
+              </Text>
+              {loadPct < 100 ? (
+                <Text style={s.progPct}>{loadPct}%</Text>
+              ) : null}
             </View>
-            <View style={s.track}>
-              <LinearGradient
-                colors={[theme.accent, theme.accent2]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={[s.fill, { width: `${Math.max(4, loadPct)}%` }]}
-              />
-            </View>
+            {loadPct < 100 ? (
+              <View style={s.track}>
+                <LinearGradient
+                  colors={[theme.accent, theme.accent2]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={[s.fill, { width: `${Math.max(4, loadPct)}%` }]}
+                />
+              </View>
+            ) : (
+              <IndeterminateBar theme={theme} />
+            )}
             <Text style={s.caption}>{L.pickerOnceOffline}</Text>
           </>
         )}
       </View>
+    </View>
+  );
+}
+
+// Sliding indeterminate bar for the warm-up phase (no real % is available for
+// the system-prompt prefill). useNativeDriver so it keeps moving even while the
+// JS thread stalls during warm-up.
+function IndeterminateBar({ theme }: { theme: Theme }) {
+  const [w, setW] = useState(0);
+  const anim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (w <= 0) return;
+    const loop = Animated.loop(
+      Animated.timing(anim, {
+        toValue: 1,
+        duration: 1100,
+        easing: Easing.inOut(Easing.ease),
+        useNativeDriver: true,
+      }),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [w, anim]);
+  const segW = Math.max(24, w * 0.4);
+  const translateX = anim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-segW, w],
+  });
+  return (
+    <View
+      onLayout={(e) => setW(e.nativeEvent.layout.width)}
+      style={{
+        height: 6,
+        borderRadius: 3,
+        backgroundColor: theme.line,
+        overflow: "hidden",
+      }}
+    >
+      <Animated.View
+        style={{ width: segW, height: 6, transform: [{ translateX }] }}
+      >
+        <LinearGradient
+          colors={[theme.accent, theme.accent2]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+          style={{ flex: 1, borderRadius: 3 }}
+        />
+      </Animated.View>
     </View>
   );
 }

@@ -299,12 +299,17 @@ export default function App() {
   };
   // Full sync shared by the "synchronise" intent and the Settings button.
   const runGcalSync = async (): Promise<string> => {
-    // Respect the Settings toggle even on the voice path: a stored calendar id
-    // must NOT sync once the feature is switched off.
-    if (!gcalEnabled) return L.gcalNoCalendar;
+    // Read the target straight from persisted settings (SQLite), NOT React state:
+    // the voice "result" handler can hold a stale closure where gcalEnabled/
+    // gcalCalendarId are still their launch defaults (false/null), which made a
+    // just-selected calendar look unset. The DB is the source of truth here, and
+    // it also respects the on/off toggle on the voice path.
+    const enabled = (await getSetting("gcalEnabled")) === "1";
+    if (!enabled) return L.gcalNoCalendar;
+    const calId = await getSetting("gcalCalendarId");
     setGcalBusy(true);
     try {
-      const sum = await syncNow({ calendarId: gcalCalendarId });
+      const sum = await syncNow({ calendarId: calId });
       await refreshTasks();
       return speechForSummary(sum);
     } catch {

@@ -29,6 +29,9 @@ export async function loadModel(
     },
     (p) => onProgress?.(p),
   );
+  // Let React paint the warm-up UI (the indeterminate progress bar) and start
+  // its native-driven animation BEFORE the warm-up prefill saturates the CPU.
+  await new Promise((r) => setTimeout(r, 60));
   // Warm up: prefill the static system prefix into the KV cache now, so the
   // FIRST real command isn't prefill-bound (15s -> ~6s). llama.rn reuses the
   // common prefix automatically on subsequent completions on the same context.
