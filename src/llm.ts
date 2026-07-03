@@ -89,7 +89,7 @@ Outils disponibles :
 - {"tool":"unknown"} si rien ne correspond.
 "due" reprend l'expression temporelle telle quelle (ex: "demain 14h").
 "dueISO" = échéance résolue en date ISO 8601 ("2026-06-15T14:00") depuis la DATE ACTUELLE fournie, ou null.
-"endISO" (createTask) = si un RDV a une PLAGE horaire (« de 14h à 15h30 », « de 8h à 9h », « réunion 10h-11h »), "dueISO" = le DÉBUT et "endISO" = la FIN (ISO complet, même jour) ; sinon null. Ne concerne QUE createTask ; DÉPLACER un RDV « de X à Y » = updateTask (X=ancienne, Y=nouvelle, voir plus bas).
+"endISO" (createTask) = fin d'une PLAGE horaire (« de 14h à 15h30 », « de 8h à 9h », « réunion 10h-11h »). RÈGLE ABSOLUE : dès qu'une heure est donnée, TOUJOURS renseigner "dueISO" (DÉBUT résolu en ISO) — ne JAMAIS l'omettre ; "endISO" = FIN résolue en ISO le même jour, ou null s'il n'y a pas de plage. Les DEUX sont des ISO complets. Ex : "ajoute réunion le 5 juillet de 14h à 15h30" -> {"tool":"createTask","title":"réunion","due":"5 juillet 14h","dueISO":"2026-07-05T14:00","endISO":"2026-07-05T15:30","priority":null,"category":"Rendez-vous","subcategory":null,"person":null,"place":null}. DÉPLACER un RDV « de X à Y » = updateTask (X=ancienne, Y=nouvelle, voir plus bas), jamais createTask.
 "category" (niveau 1) : si un PROJET est nommé (ex. "projet Mon Assistant Pro"), category = nom du projet ; sinon dossier thématique court (Santé, Contact, Rendez-vous, Courses, Travail, Finances, Famille, Divers).
 "subcategory" (niveau 2, optionnel) = sous-dossier (ex. projet -> "UI", "Tests") sinon null.
 "person" (QUI) = la personne nommée/évoquée ("avec Paul", "pour maman", "appeler le dentiste") -> "Paul"/"Maman"/"Dentiste" ; sinon null.
@@ -149,7 +149,7 @@ Available tools:
 - {"tool":"unknown"} if nothing matches.
 "due" keeps the time expression as-is (e.g. "tomorrow 2pm").
 "dueISO" = due date resolved to ISO 8601 ("2026-06-15T14:00") from the CURRENT DATE provided, or null.
-"endISO" (createTask) = if an appointment has a TIME RANGE ("from 2pm to 3:30pm", "8 to 9", "meeting 10-11am"), "dueISO" = the START and "endISO" = the END (full ISO, same day); else null. createTask ONLY; to MOVE an appointment "from X to Y" use updateTask (X=old, Y=new, see below).
+"endISO" (createTask) = end of a TIME RANGE ("from 2pm to 3:30pm", "8 to 9", "meeting 10-11am"). ABSOLUTE rule: whenever a time is given, ALWAYS fill "dueISO" (resolved START in ISO) — NEVER omit it; "endISO" = resolved END in ISO the same day, or null if no range. BOTH are full ISO. Ex: "add a meeting on July 5 from 2pm to 3:30pm" -> {"tool":"createTask","title":"meeting","due":"July 5 2pm","dueISO":"2026-07-05T14:00","endISO":"2026-07-05T15:30","priority":null,"category":"Appointment","subcategory":null,"person":null,"place":null}. To MOVE an appointment "from X to Y" use updateTask (X=old, Y=new, see below), never createTask.
 "category" (level 1): if a PROJECT is named (e.g. "project Mon Assistant Pro"), category = the project name; otherwise a short thematic folder (Health, Contact, Appointment, Shopping, Work, Finances, Family, Misc).
 "subcategory" (level 2, optional) = sub-folder (e.g. project -> "UI", "Tests") else null.
 "person" (WHO) = the named/implied person ("with Paul", "for mom", "call the dentist") -> "Paul"/"Mom"/"Dentist"; else null.
