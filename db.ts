@@ -72,6 +72,16 @@ export async function initDb(): Promise<void> {
       result TEXT,
       created_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS setting (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS gcal_map (
+      task_id INTEGER PRIMARY KEY,
+      event_id TEXT NOT NULL,
+      calendar_id TEXT NOT NULL,
+      synced_at INTEGER NOT NULL
+    );
   `);
   // Migrations for existing installs (ignore "duplicate column" errors).
   for (const col of [
@@ -282,4 +292,57 @@ export async function logIntent(entry: {
     entry.result,
     Date.now(),
   );
+}
+
+// ── Preferences (key/value) ──
+// Small durable store for UI preferences (active theme, language) so a choice
+// survives relaunch — reuses SQLite, no extra native storage dependency.
+export async function getSetting(key: string): Promise<string | null> {
+  const row = await requireDb().getFirstAsync<{ value: string }>(
+    "SELECT value FROM setting WHERE key=?",
+    key,
+  );
+  return row?.value ?? null;
+}
+
+export async function setSetting(key: string, value: string): Promise<void> {
+  await requireDb().runAsync(
+    "INSERT INTO setting (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+    key,
+    value,
+  );
+}
+
+// ── Google Calendar sync mapping (Kairos task ↔ pushed event) ──
+// One row per task that has been mirrored to a calendar; lets the one-way sync
+// update/delete the right event instead of creating duplicates.
+export type GcalMap = {
+  task_id: number;
+  event_id: string;
+  calendar_id: string;
+};
+
+export async function listGcalMaps(): Promise<GcalMap[]> {
+  return requireDb().getAllAsync<GcalMap>(
+    "SELECT task_id, event_id, calendar_id FROM gcal_map",
+  );
+}
+
+export async function upsertGcalMap(
+  taskId: number,
+  eventId: string,
+  calendarId: string,
+): Promise<void> {
+  await requireDb().runAsync(
+    "INSERT INTO gcal_map (task_id, event_id, calendar_id, synced_at) VALUES (?, ?, ?, ?) " +
+      "ON CONFLICT(task_id) DO UPDATE SET event_id=excluded.event_id, calendar_id=excluded.calendar_id, synced_at=excluded.synced_at",
+    taskId,
+    eventId,
+    calendarId,
+    Date.now(),
+  );
+}
+
+export async function deleteGcalMap(taskId: number): Promise<void> {
+  await requireDb().runAsync("DELETE FROM gcal_map WHERE task_id=?", taskId);
 }
