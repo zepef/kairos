@@ -43,3 +43,10 @@ node_modules
 
 # Claude Code worktrees
 .claude/worktrees/
+
+# Build / signing artifacts
+*.apk
+*.aab
+*.idsig
+*.keystore
+*.jks
