@@ -1,8 +1,4 @@
-<p align="center">
-  <a href="README.md"><img src="public/kairos-en.jpg" alt="Read in English" width="410"></a>
-  &nbsp;&nbsp;
-  <a href="README.fr.md"><img src="public/kairos-fr.jpg" alt="Lire en français" width="410"></a>
-</p>
+<p align="center"><img src="public/kairos-en.jpg" alt="Kairos" width="820"></p>
 
 <p align="center"><b>English</b> · <a href="README.fr.md">Français</a></p>
 
