@@ -13,7 +13,8 @@ export type Task = {
   title: string;
   status: TaskStatus;
   due: string | null; // raw expression as said ("demain 14h")
-  due_iso: string | null; // resolved ISO datetime for calendar filtering
+  due_iso: string | null; // resolved ISO datetime (START, for calendar filtering)
+  end_iso: string | null; // resolved ISO END datetime (appointments with a range)
   priority: number | null;
   category: string | null; // level-1 folder
   subcategory: string | null; // level-2 sub-folder
@@ -35,6 +36,7 @@ const UPDATABLE = new Set([
   "title",
   "due",
   "due_iso",
+  "end_iso",
   "priority",
   "category",
   "subcategory",
@@ -88,6 +90,7 @@ export async function initDb(): Promise<void> {
     "category TEXT",
     "subcategory TEXT",
     "due_iso TEXT",
+    "end_iso TEXT",
     "person TEXT",
     "place TEXT",
     "note TEXT",
@@ -109,6 +112,7 @@ export async function createTask(input: {
   title: string;
   due?: string | null;
   dueIso?: string | null;
+  endIso?: string | null;
   priority?: number | null;
   category?: string | null;
   subcategory?: string | null;
@@ -118,10 +122,11 @@ export async function createTask(input: {
 }): Promise<Task> {
   const now = Date.now();
   const res = await requireDb().runAsync(
-    "INSERT INTO task (title, status, due, due_iso, priority, category, subcategory, person, place, note, created_at) VALUES (?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO task (title, status, due, due_iso, end_iso, priority, category, subcategory, person, place, note, created_at) VALUES (?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     input.title,
     input.due ?? null,
     input.dueIso ?? null,
+    input.endIso ?? null,
     input.priority ?? null,
     input.category ?? null,
     input.subcategory ?? null,
@@ -136,6 +141,7 @@ export async function createTask(input: {
     status: "todo",
     due: input.due ?? null,
     due_iso: input.dueIso ?? null,
+    end_iso: input.endIso ?? null,
     priority: input.priority ?? null,
     category: input.category ?? null,
     subcategory: input.subcategory ?? null,
@@ -252,12 +258,13 @@ export async function deleteTaskById(id: number): Promise<void> {
 
 export async function insertFullTask(t: Task): Promise<void> {
   await requireDb().runAsync(
-    "INSERT INTO task (id,title,status,due,due_iso,priority,category,subcategory,person,place,note,created_at,completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    "INSERT INTO task (id,title,status,due,due_iso,end_iso,priority,category,subcategory,person,place,note,created_at,completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     t.id,
     t.title,
     t.status,
     t.due,
     t.due_iso,
+    t.end_iso,
     t.priority,
     t.category,
     t.subcategory,

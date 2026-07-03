@@ -145,6 +145,15 @@ function fmtWhen(iso: string): string {
   return `${p(d.getDate())}/${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+// Just the HH:MM of an ISO instant (used to append an appointment's end time).
+function fmtTime(iso: string): string {
+  const ms = parseIso(iso);
+  if (Number.isNaN(ms)) return "";
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 // Level-1 folders -> level-2 subfolders (case-insensitive; first-seen label).
 // No category -> "Divers"; "" subcategory = directly in the folder.
 type Folder = {
@@ -984,12 +993,12 @@ export default function App() {
     return theme.accent;
   };
   // What the due column shows: a status badge (pending/postponed) else the time.
-  const dueText = (t: Task): string =>
-    L.statusBadge[t.status]
-      ? (L.statusBadge[t.status] as string)
-      : t.due_iso
-        ? fmtWhen(t.due_iso)
-        : (t.due ?? "");
+  const dueText = (t: Task): string => {
+    if (L.statusBadge[t.status]) return L.statusBadge[t.status] as string;
+    if (!t.due_iso) return t.due ?? "";
+    const end = t.end_iso ? fmtTime(t.end_iso) : "";
+    return end ? `${fmtWhen(t.due_iso)}–${end}` : fmtWhen(t.due_iso);
+  };
   const dueTextColor = (t: Task): string =>
     L.statusBadge[t.status] ? theme.accent2 : dueColor(t);
 

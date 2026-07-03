@@ -199,6 +199,8 @@ function buildChanges(obj: any): Record<string, unknown> {
   if (typeof c.due === "string") out.due = c.due;
   if (typeof c.dueISO === "string") out.due_iso = c.dueISO;
   else if (typeof c.due_iso === "string") out.due_iso = c.due_iso;
+  if (typeof c.endISO === "string") out.end_iso = c.endISO;
+  else if (typeof c.end_iso === "string") out.end_iso = c.end_iso;
   if (typeof c.priority === "number") out.priority = c.priority;
   if ("category" in c) out.category = normalizeCategory(c.category);
   if ("subcategory" in c) out.subcategory = normalizeCategory(c.subcategory);
@@ -289,6 +291,7 @@ export async function dispatch(
         title: obj.title,
         due: obj.due ?? null,
         dueIso: typeof obj.dueISO === "string" ? obj.dueISO : null,
+        endIso: typeof obj.endISO === "string" ? obj.endISO : null,
         priority: typeof obj.priority === "number" ? obj.priority : null,
         category,
         subcategory,
