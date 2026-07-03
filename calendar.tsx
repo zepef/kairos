@@ -53,13 +53,18 @@ const startOfDay = (d: Date) =>
 const open = (t: Task) => t.status !== "done" && t.status !== "archived";
 
 function Chip({ t, locale, st }: { t: Task; locale: string; st: CalStyles }) {
-  const ms = parseIso(t.due_iso);
-  const time = Number.isNaN(ms)
-    ? ""
-    : new Date(ms).toLocaleTimeString(locale, {
-        hour: "2-digit",
-        minute: "2-digit",
-      });
+  const fmt = (iso: string | null) => {
+    const ms = parseIso(iso);
+    return Number.isNaN(ms)
+      ? ""
+      : new Date(ms).toLocaleTimeString(locale, {
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+  };
+  const startT = fmt(t.due_iso);
+  const endT = fmt(t.end_iso);
+  const time = startT && endT ? `${startT}–${endT}` : startT;
   return (
     <View style={st.chip}>
       <Text style={st.chipText} numberOfLines={1}>

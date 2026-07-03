@@ -99,11 +99,14 @@ function buildEventDetails(task: Task): Partial<Calendar.Event> {
     notes: task.note ?? undefined,
   };
   if (hasTime) {
-    return {
-      ...base,
-      startDate: start,
-      endDate: new Date(start.getTime() + DEFAULT_EVENT_MINUTES * 60000),
-    };
+    // Use the task's real end time if it's a valid instant after the start,
+    // otherwise fall back to a default 60-minute block.
+    const endMs = parseIso(task.end_iso);
+    const endDate =
+      !Number.isNaN(endMs) && endMs > start.getTime()
+        ? new Date(endMs)
+        : new Date(start.getTime() + DEFAULT_EVENT_MINUTES * 60000);
+    return { ...base, startDate: start, endDate };
   }
   // All-day events must be UTC-midnight with timeZone "UTC" (Android/Google
   // Calendar contract) — local midnight shifts the event a day in non-UTC zones.
