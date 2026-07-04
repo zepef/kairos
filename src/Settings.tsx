@@ -2,13 +2,23 @@
 // button. Themed by the active theme; the Appearance tiles preview and switch
 // the three themes live. TTS + language (previously in the bottom bar) live here.
 import { useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
+import {
+  Alert,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 import { useTheme } from "./ThemeContext";
 import { THEMES, THEME_ORDER, type Theme } from "./theme";
 import { LangToggle } from "./flags";
 import { Orb } from "./Orb";
 import type { Lang, Strings } from "./i18n";
 import type { CalInfo } from "./gcal";
+import type { KeyMode } from "./security";
 
 export default function Settings({
   lang,
@@ -24,6 +34,19 @@ export default function Settings({
   onSelectCalendar,
   gcalBusy,
   onSyncNow,
+  lockEnabled,
+  biometricAvail,
+  passcodeSet,
+  onToggleLock,
+  onSetPasscode,
+  encEnabled,
+  keyMode,
+  zkBiometric,
+  securityBusy,
+  onToggleEnc,
+  onEnableZk,
+  onDisableZk,
+  onSetZkBiometric,
 }: {
   lang: Lang;
   setLang: (l: Lang) => void;
@@ -38,10 +61,74 @@ export default function Settings({
   onSelectCalendar: (id: string) => void;
   gcalBusy: boolean;
   onSyncNow: () => Promise<string>;
+  lockEnabled: boolean;
+  biometricAvail: boolean;
+  passcodeSet: boolean;
+  onToggleLock: (b: boolean) => Promise<void>;
+  onSetPasscode: (code: string) => Promise<void>;
+  encEnabled: boolean;
+  keyMode: KeyMode;
+  zkBiometric: boolean;
+  securityBusy: boolean;
+  onToggleEnc: (b: boolean) => Promise<void>;
+  onEnableZk: (code: string) => Promise<boolean>;
+  onDisableZk: () => Promise<void>;
+  onSetZkBiometric: (b: boolean) => Promise<void>;
 }) {
   const { theme, name, setTheme } = useTheme();
   const s = makeStyles(theme);
   const [syncMsg, setSyncMsg] = useState("");
+  // Passcode-set inline flow (used both to first-set and to change the code).
+  const [pcOpen, setPcOpen] = useState(false);
+  const [pc1, setPc1] = useState("");
+  const [pc2, setPc2] = useState("");
+  const [pcErr, setPcErr] = useState("");
+  // Zero-knowledge activation inline flow (re-enter the passcode to derive key).
+  const [zkOpen, setZkOpen] = useState(false);
+  const [zkPc, setZkPc] = useState("");
+  const [secMsg, setSecMsg] = useState("");
+
+  const closePasscode = () => {
+    setPcOpen(false);
+    setPc1("");
+    setPc2("");
+    setPcErr("");
+  };
+  const savePasscode = async () => {
+    if (pc1.length < 4) return setPcErr(L.lockPasscodeTooShort);
+    if (pc1 !== pc2) return setPcErr(L.lockPasscodeMismatch);
+    await onSetPasscode(pc1);
+    if (!lockEnabled) await onToggleLock(true); // first-set also enables the lock
+    closePasscode();
+    setSecMsg(L.lockPasscodeSaved);
+  };
+  const onLockSwitch = async (b: boolean) => {
+    setSecMsg("");
+    if (b) {
+      if (!passcodeSet) return setPcOpen(true); // must set a code first
+      await onToggleLock(true);
+    } else {
+      if (encEnabled && keyMode === "zk") return setSecMsg(L.encZkNeedsLock);
+      await onToggleLock(false);
+    }
+  };
+  const openZk = () => {
+    setSecMsg("");
+    Alert.alert(L.encZkWarnTitle, L.encZkWarnBody, [
+      { text: L.lockCancel, style: "cancel" },
+      {
+        text: L.encZkConfirm,
+        style: "destructive",
+        onPress: () => setZkOpen(true),
+      },
+    ]);
+  };
+  const confirmZk = async () => {
+    const ok = await onEnableZk(zkPc);
+    setZkOpen(false);
+    setZkPc("");
+    if (!ok) setSecMsg(L.unlockWrong);
+  };
   return (
     <View style={s.screen}>
       <View style={s.header}>
@@ -148,6 +235,157 @@ export default function Settings({
           </View>
         )}
 
+        {/* Verrouillage */}
+        <Text style={s.section}>{L.settingsLock}</Text>
+        <View style={s.card}>
+          <View style={s.cardTextCol}>
+            <Text style={s.cardLabel}>{L.settingsLock}</Text>
+            <Text style={s.cardSub}>{L.settingsLockSub}</Text>
+          </View>
+          <Switch
+            value={lockEnabled}
+            onValueChange={onLockSwitch}
+            trackColor={{ true: theme.accent, false: theme.line }}
+            thumbColor="#ffffff"
+          />
+        </View>
+        {lockEnabled && (
+          <View style={s.cardCol}>
+            <Text style={s.cardSub}>
+              {biometricAvail
+                ? L.lockBiometricAvailable
+                : L.lockBiometricUnavailable}
+            </Text>
+            <Pressable style={s.secBtn} onPress={() => setPcOpen(true)}>
+              <Text style={s.secBtnText}>{L.lockChangePasscode}</Text>
+            </Pressable>
+          </View>
+        )}
+        {pcOpen && (
+          <View style={s.cardCol}>
+            <TextInput
+              style={s.pinInput}
+              value={pc1}
+              onChangeText={setPc1}
+              placeholder={L.lockPasscodePlaceholder}
+              placeholderTextColor={theme.muted}
+              secureTextEntry
+              autoFocus
+            />
+            <TextInput
+              style={s.pinInput}
+              value={pc2}
+              onChangeText={setPc2}
+              placeholder={L.lockPasscodeConfirmPlaceholder}
+              placeholderTextColor={theme.muted}
+              secureTextEntry
+            />
+            {pcErr ? <Text style={s.warnText}>{pcErr}</Text> : null}
+            <View style={s.btnRow}>
+              <Pressable style={s.secBtn} onPress={savePasscode}>
+                <Text style={s.secBtnText}>{L.lockSave}</Text>
+              </Pressable>
+              <Pressable style={s.secBtn} onPress={closePasscode}>
+                <Text style={s.secBtnMuted}>{L.lockCancel}</Text>
+              </Pressable>
+            </View>
+          </View>
+        )}
+        {secMsg ? <Text style={s.syncMsg}>{secMsg}</Text> : null}
+
+        {/* Chiffrement */}
+        <Text style={s.section}>{L.settingsEncryption}</Text>
+        <View style={s.card}>
+          <View style={s.cardTextCol}>
+            <Text style={s.cardLabel}>{L.settingsEncryption}</Text>
+            <Text style={s.cardSub}>{L.settingsEncryptionSub}</Text>
+          </View>
+          <Switch
+            value={encEnabled}
+            onValueChange={onToggleEnc}
+            disabled={securityBusy}
+            trackColor={{ true: theme.accent, false: theme.line }}
+            thumbColor="#ffffff"
+          />
+        </View>
+        {encEnabled && (
+          <View style={s.cardCol}>
+            <Text style={s.cardSub}>
+              {L.encMode} ·{" "}
+              {keyMode === "zk" ? L.encModeZk : L.encModeRecoverable}
+            </Text>
+            {keyMode === "recoverable" ? (
+              <>
+                <Pressable
+                  style={[
+                    s.dangerBtn,
+                    (!(lockEnabled && passcodeSet) || securityBusy) &&
+                      s.btnDisabled,
+                  ]}
+                  disabled={!(lockEnabled && passcodeSet) || securityBusy}
+                  onPress={openZk}
+                >
+                  <Text style={s.dangerBtnText}>{L.encEnableZk}</Text>
+                </Pressable>
+                {!(lockEnabled && passcodeSet) ? (
+                  <Text style={s.cardSub}>{L.encZkNeedsLock}</Text>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <View style={s.zkRow}>
+                  <View style={s.cardTextCol}>
+                    <Text style={s.cardLabel}>{L.encZkBiometric}</Text>
+                    <Text style={s.cardSub}>{L.encZkBiometricSub}</Text>
+                  </View>
+                  <Switch
+                    value={zkBiometric}
+                    onValueChange={onSetZkBiometric}
+                    disabled={securityBusy}
+                    trackColor={{ true: theme.accent, false: theme.line }}
+                    thumbColor="#ffffff"
+                  />
+                </View>
+                <Pressable
+                  style={[s.secBtn, securityBusy && s.btnDisabled]}
+                  disabled={securityBusy}
+                  onPress={onDisableZk}
+                >
+                  <Text style={s.secBtnText}>{L.encDisableZk}</Text>
+                </Pressable>
+              </>
+            )}
+            {zkOpen && (
+              <View>
+                <Text style={s.cardSub}>{L.encZkEnterPasscode}</Text>
+                <TextInput
+                  style={s.pinInput}
+                  value={zkPc}
+                  onChangeText={setZkPc}
+                  placeholder={L.unlockCodePlaceholder}
+                  placeholderTextColor={theme.muted}
+                  secureTextEntry
+                  autoFocus
+                />
+                <View style={s.btnRow}>
+                  <Pressable style={s.dangerBtn} onPress={confirmZk}>
+                    <Text style={s.dangerBtnText}>{L.encZkConfirm}</Text>
+                  </Pressable>
+                  <Pressable
+                    style={s.secBtn}
+                    onPress={() => {
+                      setZkOpen(false);
+                      setZkPc("");
+                    }}
+                  >
+                    <Text style={s.secBtnMuted}>{L.lockCancel}</Text>
+                  </Pressable>
+                </View>
+              </View>
+            )}
+          </View>
+        )}
+
         {/* Modèle et confidentialité */}
         <Text style={s.section}>{L.settingsModelPrivacy}</Text>
         <View style={s.cardCol}>
@@ -157,7 +395,11 @@ export default function Settings({
           </View>
           <Text style={s.modelMeta}>{L.settingsModelMeta}</Text>
           <Text style={s.privacy}>
-            {gcalEnabled ? L.settingsPrivacyLineSync : L.settingsPrivacyLine}
+            {encEnabled
+              ? L.settingsPrivacyLineEncrypted
+              : gcalEnabled
+                ? L.settingsPrivacyLineSync
+                : L.settingsPrivacyLine}
           </Text>
         </View>
 
@@ -256,6 +498,53 @@ function makeStyles(t: Theme) {
       color: t.muted,
       marginTop: 8,
       textAlign: "center",
+    },
+    // ── Security sections ──
+    pinInput: {
+      marginTop: 8,
+      paddingVertical: 10,
+      paddingHorizontal: 14,
+      borderRadius: 10,
+      backgroundColor: t.bg,
+      borderWidth: 1.5,
+      borderColor: t.line,
+      fontFamily: t.body.medium,
+      fontSize: 15,
+      color: t.ink,
+    },
+    btnRow: { flexDirection: "row", gap: 10, marginTop: 4 },
+    secBtn: {
+      flex: 1,
+      marginTop: 8,
+      paddingVertical: 10,
+      borderRadius: 10,
+      borderWidth: 1.5,
+      borderColor: t.line,
+      alignItems: "center",
+    },
+    secBtnText: { fontFamily: t.body.semibold, fontSize: 13.5, color: t.accent },
+    secBtnMuted: { fontFamily: t.body.semibold, fontSize: 13.5, color: t.muted },
+    dangerBtn: {
+      flex: 1,
+      marginTop: 8,
+      paddingVertical: 10,
+      borderRadius: 10,
+      backgroundColor: t.danger,
+      alignItems: "center",
+    },
+    dangerBtnText: { fontFamily: t.display.semibold, fontSize: 13.5, color: t.bg },
+    btnDisabled: { opacity: 0.4 },
+    warnText: {
+      fontFamily: t.body.medium,
+      fontSize: 12.5,
+      color: t.danger,
+      marginTop: 6,
+    },
+    zkRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginTop: 6,
     },
     footer: {
       fontFamily: t.body.medium,
