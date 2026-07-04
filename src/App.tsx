@@ -1,5 +1,15 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import {
+  ActivityIndicator,
+  Alert,
+  AppState,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 import { StatusBar } from "expo-status-bar";
 import * as Speech from "expo-speech";
 import {
@@ -20,16 +30,21 @@ import {
 } from "./intent";
 import {
   applyRevert,
+  closeDb,
   deleteTaskById,
+  deleteDatabaseFile,
+  exportDatabase,
   getSetting,
   initDb,
+  isDbOpen,
   listTasks,
   setSetting,
   updateTaskById,
+  type KeyMaterial,
   type Revert,
   type Task,
 } from "./db";
-import { tr, type Lang, STT_LANG, TTS_LANG } from "./i18n";
+import { tr, type Lang, type Strings, STT_LANG, TTS_LANG } from "./i18n";
 import { LangToggle } from "./flags";
 import { THEMES, DEFAULT_THEME, type Theme, type ThemeName } from "./theme";
 import { ThemeContext, isThemeName } from "./ThemeContext";
@@ -44,6 +59,8 @@ import {
   type CalInfo,
   type SyncSummary,
 } from "./gcal";
+import * as security from "./security";
+import Unlock, { type UnlockResult } from "./Unlock";
 
 // Kairos — STT (FR/EN) + on-device intent parsing with Gemma 4 (E2B) via
 // llama.rn. Voice -> STT -> Gemma 4 (JSON action) -> execute on SQLite -> TTS.
@@ -54,6 +71,10 @@ import {
 // Home orb diameter (the push-to-talk zone). Compact orbs (list/calendar) size
 // themselves inline.
 const ORB_SIZE = 210;
+
+// App-lock: re-lock after this long in the background; brute-force backoff params.
+const RELOCK_MS = 60_000;
+const LOCK_MAX_FAILS = 5;
 
 type Status = "idle" | "listening" | "speaking";
 type ModelStatus = "unloaded" | "loading" | "ready" | "error";
@@ -209,6 +230,22 @@ export default function App() {
   const [gcalCalendars, setGcalCalendars] = useState<CalInfo[]>([]);
   const [gcalBusy, setGcalBusy] = useState(false);
 
+  // ── Security: app lock + at-rest encryption ──
+  // All persisted state lives in secure-store (security.ts), OUTSIDE the DB —
+  // because the DB itself may be the encrypted thing (chicken-and-egg).
+  const [securityChecked, setSecurityChecked] = useState(false); // pre-DB phase done
+  const [unlocked, setUnlocked] = useState(false); // gate cleared → DB usable
+  const [sec, setSec] = useState<security.SecurityState | null>(null);
+  const [biometricAvail, setBiometricAvail] = useState(false);
+  const [lockoutUntil, setLockoutUntil] = useState<number | null>(null);
+  const [securityBusy, setSecurityBusy] = useState(false); // migration in progress
+  const [securityBusyMsg, setSecurityBusyMsg] = useState("");
+  const [recover, setRecover] = useState(false); // inconsistent state → recovery screen
+  const dbKeyRef = useRef<KeyMaterial>(null); // the key the DB is currently open with
+  const bgSince = useRef(0); // when the app last went to background (re-lock timer)
+  const failCount = useRef(0); // consecutive wrong-passcode attempts
+  const migrationInFlight = useRef(false); // synchronous guard against concurrent migrations
+
   const [modelStatus, setModelStatus] = useState<ModelStatus>("unloaded");
   const [loadPct, setLoadPct] = useState(0);
   const [intentJson, setIntentJson] = useState("");
@@ -268,7 +305,8 @@ export default function App() {
   const theme = THEMES[themeName];
   const setTheme = (n: ThemeName) => {
     setThemeName(n);
-    setSetting("theme", n).catch(() => {});
+    setSetting("theme", n).catch(() => {}); // DB (authoritative; no-op if locked)
+    security.setUiTheme(n).catch(() => {}); // secure-store mirror (pre-DB screens)
   };
   const themeCtx = useMemo(
     () => ({ theme, name: themeName, setTheme }),
@@ -280,7 +318,8 @@ export default function App() {
   // Language change that also persists the choice.
   const changeLang = (l: Lang) => {
     setLang(l);
-    setSetting("lang", l).catch(() => {});
+    setSetting("lang", l).catch(() => {}); // DB (authoritative; no-op if locked)
+    security.setUiLang(l).catch(() => {}); // secure-store mirror (pre-DB screens)
   };
 
   // ── Google Calendar sync helpers ──
@@ -337,26 +376,91 @@ export default function App() {
   // (so an explicit ÉTAT filter like "accomplies" can surface done/archived).
   const refreshTasks = async () => setTasks(await listTasks("all"));
 
-  // On launch: open the DB, restore saved theme/language, then auto-load Gemma 4
-  // (with progress) so the model is ready without any manual step.
+  // Open the DB (with the resolved key), restore settings from it, then auto-load
+  // Gemma. This is the ONLY place initDb runs — it happens after the security gate
+  // is cleared, so an encrypted DB is never touched before the key is available.
+  const bootDb = async (key: KeyMaterial, file: string) => {
+    await initDb({ key, file }); // throws on a wrong/missing key
+    dbKeyRef.current = key;
+    // Crash-safety sweep: once the authoritative DB is proven open, remove any
+    // stale canonical slot left by an interrupted migration (e.g. a plaintext copy
+    // that survived enabling encryption). Guarded to run ONLY when we opened WITH
+    // a key (encrypted mode, verified) — so a secure-store/disk desync that fell
+    // back to plaintext can never make this delete the real encrypted data.
+    if (key) {
+      for (const f of [security.PLAIN_DB, security.ENC_DB_A, security.ENC_DB_B])
+        if (f !== file) deleteDatabaseFile(f).catch(() => {});
+    }
+    try {
+      const savedTheme = await getSetting("theme");
+      if (isThemeName(savedTheme)) {
+        setThemeName(savedTheme);
+        security.setUiTheme(savedTheme).catch(() => {});
+      }
+      const savedLang = await getSetting("lang");
+      if (savedLang === "fr" || savedLang === "en") {
+        setLang(savedLang);
+        security.setUiLang(savedLang).catch(() => {});
+      }
+      const gcalOn = (await getSetting("gcalEnabled")) === "1";
+      setGcalEnabled(gcalOn);
+      setGcalCalendarId(await getSetting("gcalCalendarId"));
+      if (gcalOn)
+        listWritableGoogleCalendars().then(setGcalCalendars).catch(() => {});
+      await refreshTasks();
+    } catch (e: any) {
+      addLog(`✗ db read: ${e?.message ?? e}`);
+    }
+    setUnlocked(true);
+    loadGemma();
+  };
+
+  // On launch: read the security state (from secure-store, before any DB access),
+  // paint the mirrored theme/lang, then either open the DB inline (nothing to
+  // unlock) or show the unlock gate.
   useEffect(() => {
     (async () => {
       try {
-        await initDb();
-        const savedTheme = await getSetting("theme");
-        if (isThemeName(savedTheme)) setThemeName(savedTheme);
-        const savedLang = await getSetting("lang");
-        if (savedLang === "fr" || savedLang === "en") setLang(savedLang);
-        const gcalOn = (await getSetting("gcalEnabled")) === "1";
-        setGcalEnabled(gcalOn);
-        setGcalCalendarId(await getSetting("gcalCalendarId"));
-        if (gcalOn)
-          listWritableGoogleCalendars().then(setGcalCalendars).catch(() => {});
-        await refreshTasks();
+        const prefs = await security.getUiPrefs();
+        if (isThemeName(prefs.theme)) setThemeName(prefs.theme);
+        if (prefs.lang === "fr" || prefs.lang === "en") setLang(prefs.lang);
+        const st = await security.loadSecurity();
+        setSec(st);
+        setLockoutUntil(st.lockoutUntil);
+        failCount.current = await security.getFailCount();
+        setBiometricAvail(await security.biometricAvailable());
+        setSecurityChecked(true);
+        const needUnlock =
+          st.lockEnabled || (st.encEnabled && st.keyMode === "zk");
+        if (!needUnlock) {
+          let key: KeyMaterial = null;
+          if (st.encEnabled) {
+            const hex = await security.getRecoverableKey();
+            if (!hex) {
+              setRecover(true); // encrypted but key gone (restore/reinstall)
+              return;
+            }
+            key = security.recoverableKeyMaterial(hex);
+          }
+          try {
+            await bootDb(key, st.activeDbFile);
+          } catch (e: any) {
+            addLog(`✗ db open: ${e?.message ?? e}`);
+            if (st.encEnabled) {
+              setRecover(true);
+            } else {
+              // Plaintext open failed and no lock is configured — match the
+              // pre-lock degraded behavior (proceed into the app + still load the
+              // model) rather than funneling the user through a bogus passcode gate.
+              setUnlocked(true);
+              loadGemma();
+            }
+          }
+        }
       } catch (e: any) {
-        addLog(`✗ db init: ${e?.message ?? e}`);
+        addLog(`✗ security init: ${e?.message ?? e}`);
+        setSecurityChecked(true);
       }
-      loadGemma();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -448,6 +552,328 @@ export default function App() {
       console.log(`[KAIROS] load error: ${e?.message ?? e}`);
     }
   };
+
+  // ── Unlock gate ──
+  // Re-open the DB after a failed migration (best effort) so the UI isn't stuck
+  // with a closed database; reads the key straight from the (atomic) db-state.
+  const reopenActive = async () => {
+    const ds = await security.getDbState();
+    let key: KeyMaterial = null;
+    if (ds.encEnabled) {
+      if (ds.keyMode === "zk") key = dbKeyRef.current; // only the passcode key works
+      else {
+        const hex = await security.getRecoverableKey();
+        key = hex ? security.recoverableKeyMaterial(hex) : null;
+      }
+    }
+    await initDb({ key, file: ds.activeDbFile });
+    dbKeyRef.current = key;
+    await refreshTasks();
+  };
+
+  const registerFail = () => {
+    failCount.current += 1;
+    security.setFailCount(failCount.current).catch(() => {}); // survive an app kill
+    if (failCount.current >= LOCK_MAX_FAILS) {
+      const steps = Math.min(5, failCount.current - LOCK_MAX_FAILS + 1); // 1..5
+      const until = Date.now() + 30_000 * steps; // 30s, 60s, … capped at 150s
+      setLockoutUntil(until);
+      security.setLockoutUntil(until).catch(() => {});
+    }
+  };
+  const resetFails = () => {
+    failCount.current = 0;
+    setLockoutUntil(null);
+    security.setFailCount(0).catch(() => {});
+    security.setLockoutUntil(null).catch(() => {});
+  };
+
+  // Biometric unlock: for zk it reads the biometric-gated cached passcode; for
+  // lock-only / recoverable it runs a LocalAuthentication gate then fetches the
+  // recoverable key. Any failure just leaves the screen up for the passcode path.
+  const attemptBiometricUnlock = async () => {
+    const st = sec;
+    if (!st) return;
+    if (st.encEnabled && st.keyMode === "zk") {
+      if (!st.zkBiometric) return;
+      const code = await security.readZkPasscodeCache(L.unlockBiometricPrompt);
+      if (!code) return; // cancelled / invalidated → fall back to passcode entry
+      try {
+        await bootDb(security.passcodeKeyMaterial(code), st.activeDbFile);
+        resetFails();
+      } catch {
+        /* cached code somehow wrong → stay locked */
+      }
+      return;
+    }
+    const ok = await security.authenticate(L.unlockBiometricPrompt);
+    if (!ok) return;
+    let key: KeyMaterial = null;
+    if (st.encEnabled) {
+      const hex = await security.getRecoverableKey();
+      if (!hex) {
+        setRecover(true);
+        return;
+      }
+      key = security.recoverableKeyMaterial(hex);
+    }
+    try {
+      await bootDb(key, st.activeDbFile);
+      resetFails();
+    } catch {
+      if (st.encEnabled) setRecover(true);
+    }
+  };
+
+  // Passcode unlock. In zk mode the passcode IS the encryption key, so the DB
+  // open ITSELF is the authoritative check (NOT the stored hash). This makes a
+  // partially-failed zk passcode change non-fatal: the truly-correct code still
+  // opens the DB even if the hash is stale. In non-zk modes the key is
+  // independent of the passcode, so the hash is the gate (fast reject).
+  const attemptPasscodeUnlock = async (code: string): Promise<UnlockResult> => {
+    const st = sec;
+    if (!st) return "bad";
+    if (lockoutUntil && lockoutUntil > Date.now()) return "lockedout";
+    const zk = st.encEnabled && st.keyMode === "zk";
+    if (!zk && st.passcodeSet && !(await security.verifyPasscode(code))) {
+      registerFail();
+      return "bad";
+    }
+    let key: KeyMaterial = null;
+    if (zk) key = security.passcodeKeyMaterial(code);
+    else if (st.encEnabled) {
+      const hex = await security.getRecoverableKey();
+      if (!hex) {
+        setRecover(true);
+        return "bad";
+      }
+      key = security.recoverableKeyMaterial(hex);
+    }
+    try {
+      await bootDb(key, st.activeDbFile);
+    } catch {
+      registerFail(); // zk: wrong code → SQLCipher NOTADB
+      return "bad";
+    }
+    resetFails();
+    if (zk && st.zkBiometric) security.cacheZkPasscode(code).catch(() => {});
+    return "ok";
+  };
+
+  // ── Encryption migrations (blocking, crash-safe) ──
+  // Wrap a migration with the full-screen blocker + state refresh + a best-effort
+  // reopen if it fails. Returns whether it succeeded.
+  const runMigration = async (
+    msg: string,
+    fn: () => Promise<void>,
+  ): Promise<boolean> => {
+    if (migrationInFlight.current) return false; // sync guard: no concurrent migrations
+    migrationInFlight.current = true;
+    setSecurityBusyMsg(msg);
+    setSecurityBusy(true);
+    try {
+      await fn();
+      setSec(await security.loadSecurity());
+      return true;
+    } catch (e: any) {
+      addLog(`✗ crypto: ${e?.message ?? e}`);
+      try {
+        if (!isDbOpen()) await reopenActive();
+      } catch (e2: any) {
+        addLog(`✗ reopen: ${e2?.message ?? e2}`);
+      }
+      // If the DB is STILL closed after every reopen attempt, don't drop back to
+      // the normal UI with a dead database — route to recovery so there's a way out.
+      if (!isDbOpen()) setRecover(true);
+      setSec(await security.loadSecurity());
+      return false;
+    } finally {
+      setSecurityBusy(false);
+      migrationInFlight.current = false;
+    }
+  };
+
+  const nextEncSlot = (cur: string) =>
+    cur === security.ENC_DB_A ? security.ENC_DB_B : security.ENC_DB_A;
+
+  // The one crash-safe migration primitive shared by encrypt/decrypt/rekey.
+  // Invariant: the source is never destroyed before the destination is written
+  // AND verified (inside exportDatabase) AND the atomic db-state pointer is
+  // flipped. The `committed` flag records exactly which side we're on, so ANY
+  // failure reopens the file that is actually authoritative — using the LOCAL
+  // from/to keys, never the shared mutable dbKeyRef (which could be mid-update).
+  const migrate = async (
+    from: string,
+    fromKey: KeyMaterial,
+    to: string,
+    toKey: KeyMaterial,
+    newState: security.DbState,
+  ): Promise<void> => {
+    await closeDb();
+    let committed = false;
+    try {
+      await exportDatabase(from, fromKey, to, toKey); // dest written + verified
+      await security.setDbState(newState); // single atomic commit
+      committed = true;
+      await deleteDatabaseFile(from);
+      await initDb({ key: toKey, file: to });
+      dbKeyRef.current = toKey;
+      await refreshTasks();
+    } catch (e) {
+      // Reopen whichever file is authoritative NOW, with its matching local key.
+      try {
+        if (committed) {
+          await initDb({ key: toKey, file: to });
+          dbKeyRef.current = toKey;
+        } else {
+          await initDb({ key: fromKey, file: from }); // source untouched
+          dbKeyRef.current = fromKey;
+        }
+        await refreshTasks();
+      } catch (e2: any) {
+        addLog(`✗ reopen: ${e2?.message ?? e2}`);
+      }
+      throw e;
+    }
+  };
+
+  // Plaintext → encrypted (recoverable).
+  const encryptOp = async () => {
+    const key = security.recoverableKeyMaterial(
+      await security.ensureRecoverableKey(),
+    );
+    const from = (await security.getDbState()).activeDbFile;
+    await migrate(from, null, security.ENC_DB_A, key, {
+      encEnabled: true,
+      keyMode: "recoverable",
+      activeDbFile: security.ENC_DB_A,
+    });
+  };
+
+  // Encrypted → plaintext. Only wipe the key material AFTER a successful decrypt
+  // (migrate throws on failure, so these lines don't run if the DB is still enc).
+  const decryptOp = async () => {
+    const from = (await security.getDbState()).activeDbFile;
+    await migrate(from, dbKeyRef.current, security.PLAIN_DB, null, {
+      encEnabled: false,
+      keyMode: "recoverable",
+      activeDbFile: security.PLAIN_DB,
+    });
+    await security.deleteRecoverableKey();
+    await security.clearZkPasscodeCache();
+  };
+
+  // Re-encrypt under a new key/mode (recoverable↔zk, or zk passcode change).
+  const rekeyOp = async (newKey: KeyMaterial, newMode: security.KeyMode) => {
+    const from = (await security.getDbState()).activeDbFile;
+    await migrate(from, dbKeyRef.current, nextEncSlot(from), newKey, {
+      encEnabled: true,
+      keyMode: newMode,
+      activeDbFile: nextEncSlot(from),
+    });
+  };
+
+  // ── Settings-facing security handlers ──
+  const onToggleLock = async (b: boolean) => {
+    if (b && !(await security.isPasscodeSet())) return; // Settings collects it first
+    if (!b && sec?.encEnabled && sec.keyMode === "zk") return; // zk needs the gate
+    await security.setLockEnabled(b);
+    setSec(await security.loadSecurity());
+  };
+
+  const onSetPasscode = async (code: string) => {
+    if (sec?.encEnabled && sec.keyMode === "zk") {
+      // In zk mode the passcode IS the key → changing it re-keys the whole DB.
+      await runMigration(L.encRekeying, async () => {
+        await rekeyOp(security.passcodeKeyMaterial(code), "zk");
+        await security.setPasscode(code);
+        if (sec.zkBiometric && (await security.biometricAvailable()))
+          security.cacheZkPasscode(code).catch(() => {});
+      });
+    } else {
+      await security.setPasscode(code);
+      setSec(await security.loadSecurity());
+    }
+  };
+
+  const onToggleEnc = async (b: boolean) => {
+    if (securityBusy) return;
+    await runMigration(b ? L.encMigrating : L.encDecrypting, b ? encryptOp : decryptOp);
+  };
+
+  const onEnableZk = async (code: string): Promise<boolean> => {
+    if (!(await security.verifyPasscode(code))) return false; // must match the lock code
+    return runMigration(L.encRekeying, async () => {
+      await rekeyOp(security.passcodeKeyMaterial(code), "zk");
+      await security.deleteRecoverableKey(); // no longer used in zk mode
+      await security.setZkBiometric(true);
+      if (await security.biometricAvailable())
+        security.cacheZkPasscode(code).catch(() => {});
+    });
+  };
+
+  const onDisableZk = async () => {
+    await runMigration(L.encRekeying, async () => {
+      await security.deleteRecoverableKey(); // drop any orphaned key → force fresh
+      const hex = await security.ensureRecoverableKey();
+      await rekeyOp(security.recoverableKeyMaterial(hex), "recoverable");
+      await security.clearZkPasscodeCache();
+    });
+  };
+
+  const onSetZkBiometric = async (b: boolean) => {
+    await security.setZkBiometric(b);
+    if (!b) await security.clearZkPasscodeCache();
+    setSec(await security.loadSecurity());
+  };
+
+  // ── Recovery (encrypted DB but key unavailable) ──
+  const recoverWithPasscode = async (code: string): Promise<boolean> => {
+    const ds = await security.getDbState();
+    const key = ds.keyMode === "zk" ? security.passcodeKeyMaterial(code) : null;
+    try {
+      await bootDb(key, ds.activeDbFile);
+      setRecover(false);
+      resetFails();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const recoverReset = async () => {
+    await closeDb().catch(() => {});
+    for (const f of [security.PLAIN_DB, security.ENC_DB_A, security.ENC_DB_B])
+      await deleteDatabaseFile(f).catch(() => {});
+    await security.wipeSecurity();
+    dbKeyRef.current = null;
+    try {
+      await bootDb(null, security.PLAIN_DB); // fresh empty plaintext DB
+    } catch (e: any) {
+      addLog(`✗ reset: ${e?.message ?? e}`);
+    }
+    setRecover(false);
+    setSec(await security.loadSecurity());
+  };
+
+  // Re-lock when the app returns to the foreground after being backgrounded long
+  // enough. MVP: a UI gate only (the DB handle stays open in memory).
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (next) => {
+      if (next === "background" || next === "inactive") {
+        bgSince.current = Date.now();
+      } else if (next === "active") {
+        if (
+          sec?.lockEnabled &&
+          unlocked &&
+          bgSince.current &&
+          Date.now() - bgSince.current > RELOCK_MS
+        ) {
+          setUnlocked(false);
+        }
+      }
+    });
+    return () => sub.remove();
+  }, [sec, unlocked]);
 
   const runIntent = async (text: string) => {
     // Note-operation follow-up: we asked "edit / append / erase?" so THIS
@@ -1120,9 +1546,46 @@ export default function App() {
 
   // ── Screen content (wrapped once in the theme provider below) ──
   let content: ReactNode;
-  if (!fontsLoaded) {
-    // Brief blank (themed) frame while the bundled fonts load.
+  if (!fontsLoaded || !securityChecked) {
+    // Brief blank (themed) frame while fonts + the security state load.
     content = <View style={{ flex: 1, backgroundColor: theme.bg }} />;
+  } else if (recover) {
+    // Encrypted DB but the key is unavailable (restore/reinstall/invalidation).
+    content = (
+      <RecoveryScreen
+        theme={theme}
+        L={L}
+        zk={sec?.keyMode === "zk"}
+        onPasscode={recoverWithPasscode}
+        onReset={recoverReset}
+      />
+    );
+  } else if (securityBusy) {
+    // A blocking DB migration (encrypt/decrypt/re-key) is running.
+    content = <MigrationBlocker theme={theme} message={securityBusyMsg} />;
+  } else if (
+    !unlocked &&
+    (sec?.lockEnabled || (sec?.encEnabled && sec?.keyMode === "zk"))
+  ) {
+    // App-lock gate: biometric + passcode. Only shown when a lock/zk is actually
+    // configured — a plaintext-open failure must never funnel an unconfigured user
+    // into a passcode screen they can't satisfy. The biometric affordance is hidden
+    // in strict zk (biometric explicitly turned off) so there's no dead button.
+    const biometricOffered =
+      biometricAvail &&
+      !(sec?.encEnabled && sec.keyMode === "zk" && !sec.zkBiometric);
+    content = (
+      <Unlock
+        lang={lang}
+        setLang={changeLang}
+        L={L}
+        biometricAvailable={biometricOffered}
+        autoBiometric={biometricOffered}
+        onBiometric={attemptBiometricUnlock}
+        onPasscode={attemptPasscodeUnlock}
+        lockoutUntil={lockoutUntil}
+      />
+    );
   } else if (!started) {
     // Theme picker + model loading (design 5.1).
     content = (
@@ -1157,6 +1620,19 @@ export default function App() {
           speak(sp);
           return sp;
         }}
+        lockEnabled={sec?.lockEnabled ?? false}
+        biometricAvail={biometricAvail}
+        passcodeSet={sec?.passcodeSet ?? false}
+        onToggleLock={onToggleLock}
+        onSetPasscode={onSetPasscode}
+        encEnabled={sec?.encEnabled ?? false}
+        keyMode={sec?.keyMode ?? "recoverable"}
+        zkBiometric={sec?.zkBiometric ?? true}
+        securityBusy={securityBusy}
+        onToggleEnc={onToggleEnc}
+        onEnableZk={onEnableZk}
+        onDisableZk={onDisableZk}
+        onSetZkBiometric={onSetZkBiometric}
       />
     );
   } else if (calendar) {
@@ -1510,4 +1986,196 @@ function makeStyles(t: Theme) {
 
     dockTalk: { alignItems: "center", paddingVertical: 8, paddingBottom: 47 },
   });
+}
+
+// Full-screen blocker shown while an encryption migration rewrites the DB. The
+// warning text tells the user not to kill the app mid-migration.
+function MigrationBlocker({ theme, message }: { theme: Theme; message: string }) {
+  return (
+    <View
+      style={{
+        flex: 1,
+        backgroundColor: theme.bg,
+        alignItems: "center",
+        justifyContent: "center",
+        paddingHorizontal: 32,
+        gap: 18,
+      }}
+    >
+      <ActivityIndicator size="large" color={theme.accent} />
+      <Text
+        style={{
+          fontFamily: theme.body.medium,
+          fontSize: 14,
+          color: theme.ink,
+          textAlign: "center",
+        }}
+      >
+        {message}
+      </Text>
+    </View>
+  );
+}
+
+// Shown when the DB is flagged encrypted but its key can't be found (device
+// restore / reinstall / biometric invalidation). Never wipes silently: zk users
+// re-enter their passcode; otherwise the only option is an explicit reset.
+function RecoveryScreen({
+  theme,
+  L,
+  zk,
+  onPasscode,
+  onReset,
+}: {
+  theme: Theme;
+  L: Strings;
+  zk: boolean;
+  onPasscode: (code: string) => Promise<boolean>;
+  onReset: () => Promise<void>;
+}) {
+  const [code, setCode] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    if (busy || !code) return;
+    setBusy(true);
+    setError("");
+    try {
+      if (!(await onPasscode(code))) {
+        setError(L.unlockWrong);
+        setCode("");
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+  const confirmReset = () =>
+    Alert.alert(L.recoverResetTitle, L.recoverResetBody, [
+      { text: L.recoverCancel, style: "cancel" },
+      { text: L.recoverResetConfirm, style: "destructive", onPress: onReset },
+    ]);
+  return (
+    <View
+      style={{
+        flex: 1,
+        backgroundColor: theme.bg,
+        alignItems: "center",
+        justifyContent: "center",
+        paddingHorizontal: 30,
+        gap: 14,
+      }}
+    >
+      <Text style={{ fontSize: 30 }}>🔐</Text>
+      <Text
+        style={{
+          fontFamily: theme.display.semibold,
+          fontSize: 19,
+          color: theme.ink,
+          textAlign: "center",
+        }}
+      >
+        {L.recoverTitle}
+      </Text>
+      <Text
+        style={{
+          fontFamily: theme.body.regular,
+          fontSize: 13,
+          color: theme.muted,
+          textAlign: "center",
+          lineHeight: 19,
+        }}
+      >
+        {L.recoverKeyMissingBody}
+      </Text>
+      {zk ? (
+        <>
+          <Text
+            style={{
+              fontFamily: theme.body.medium,
+              fontSize: 12.5,
+              color: theme.ink,
+              textAlign: "center",
+              marginTop: 4,
+            }}
+          >
+            {L.recoverTryPasscode}
+          </Text>
+          <TextInput
+            value={code}
+            onChangeText={(t) => {
+              setCode(t);
+              if (error) setError("");
+            }}
+            placeholder={L.unlockCodePlaceholder}
+            placeholderTextColor={theme.muted}
+            secureTextEntry
+            editable={!busy}
+            onSubmitEditing={submit}
+            style={{
+              width: "100%",
+              maxWidth: 320,
+              paddingVertical: 12,
+              paddingHorizontal: 16,
+              borderRadius: 12,
+              backgroundColor: theme.surface,
+              borderWidth: 1.5,
+              borderColor: theme.line,
+              fontFamily: theme.body.medium,
+              fontSize: 16,
+              color: theme.ink,
+              textAlign: "center",
+            }}
+          />
+          {error ? (
+            <Text
+              style={{
+                fontFamily: theme.body.medium,
+                fontSize: 12.5,
+                color: theme.danger,
+              }}
+            >
+              {error}
+            </Text>
+          ) : null}
+          <Pressable
+            style={{
+              width: "100%",
+              maxWidth: 320,
+              paddingVertical: 14,
+              borderRadius: 14,
+              backgroundColor: theme.accent,
+              alignItems: "center",
+              opacity: busy || !code ? 0.4 : 1,
+            }}
+            onPress={submit}
+            disabled={busy || !code}
+          >
+            <Text
+              style={{
+                fontFamily: theme.display.semibold,
+                fontSize: 15,
+                color: theme.bg,
+              }}
+            >
+              {L.unlockSubmit}
+            </Text>
+          </Pressable>
+        </>
+      ) : null}
+      <Pressable
+        style={{ paddingVertical: 12, marginTop: 4 }}
+        onPress={confirmReset}
+      >
+        <Text
+          style={{
+            fontFamily: theme.body.semibold,
+            fontSize: 13.5,
+            color: theme.danger,
+          }}
+        >
+          {L.recoverResetBtn}
+        </Text>
+      </Pressable>
+    </View>
+  );
 }

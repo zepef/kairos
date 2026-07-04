@@ -1,5 +1,44 @@
 import * as SQLite from "expo-sqlite";
 
+// Key material handed to the SQLite layer to open/encrypt the database. `null` =
+// plaintext. "raw" = a 64-hex-char key applied directly (recoverable mode, full
+// entropy → skips SQLCipher's PBKDF2). "passphrase" = the user's passcode run
+// through SQLCipher's own PBKDF2 (zero-knowledge mode). The value is produced by
+// security.ts; db.ts only consumes it. See security.ts for the rationale.
+export type KeyMaterial =
+  | { form: "raw"; hex: string }
+  | { form: "passphrase"; secret: string }
+  | null;
+
+// SQLCipher: the KEY clause for `PRAGMA key`/`ATTACH … KEY`. Raw keys use the
+// x'…' hex form (double-quoted); passphrases are single-quoted with '' escaping.
+function keyClause(key: KeyMaterial): string {
+  if (!key) return "''"; // empty key = unencrypted attach/open
+  return key.form === "raw"
+    ? `"x'${key.hex}'"`
+    : `'${key.secret.replace(/'/g, "''")}'`;
+}
+
+// Apply an encryption key to a freshly-opened connection and prove it works.
+// Order matters: PRAGMA key MUST be the first statement after open, before WAL or
+// any schema. Guards that SQLCipher is actually compiled in (cipher_version), then
+// forces a read so a wrong/corrupt key surfaces as a throw (SQLITE_NOTADB) instead
+// of silently returning garbage.
+async function applyKey(
+  dbi: SQLite.SQLiteDatabase,
+  key: KeyMaterial,
+): Promise<void> {
+  if (!key) return; // plaintext — nothing to do
+  await dbi.execAsync(`PRAGMA key = ${keyClause(key)};`);
+  const cv = await dbi.getFirstAsync<{ cipher_version: string | null }>(
+    "PRAGMA cipher_version;",
+  );
+  if (!cv || !cv.cipher_version)
+    throw new Error("SQLCipher unavailable (cipher_version empty)");
+  // Throws "file is not a database" (SQLITE_NOTADB) on a wrong key.
+  await dbi.getFirstAsync("SELECT count(*) FROM sqlite_master");
+}
+
 // Kairos local-first store (J2). Minimal v1: tasks + intent log.
 export type TaskStatus =
   | "todo"
@@ -49,9 +88,16 @@ const UPDATABLE = new Set([
 
 let db: SQLite.SQLiteDatabase | null = null;
 
-export async function initDb(): Promise<void> {
+// Open the app database (the singleton used by every query below). `file` is the
+// active DB filename (plaintext "kairos.db" or an encrypted slot); `key` decrypts
+// it (null = plaintext). The PRAGMA key + SQLCipher guard run before any schema.
+export async function initDb(opts?: {
+  key?: KeyMaterial;
+  file?: string;
+}): Promise<void> {
   if (db) return;
-  db = await SQLite.openDatabaseAsync("kairos.db");
+  db = await SQLite.openDatabaseAsync(opts?.file ?? "kairos.db");
+  await applyKey(db, opts?.key ?? null);
   await db.execAsync(`
     PRAGMA journal_mode = WAL;
     CREATE TABLE IF NOT EXISTS task (
@@ -106,6 +152,90 @@ export async function initDb(): Promise<void> {
 function requireDb(): SQLite.SQLiteDatabase {
   if (!db) throw new Error("DB not initialised");
   return db;
+}
+
+// Close the singleton so a migration can safely re-key/rewrite the file. Must be
+// called before any exportDatabase/re-open.
+export async function closeDb(): Promise<void> {
+  if (db) {
+    await db.closeAsync();
+    db = null;
+  }
+}
+
+export function isDbOpen(): boolean {
+  return db !== null;
+}
+
+// True if `file` opens cleanly with `key` (used to verify a migration output
+// before we trust it). Opens its own throwaway connection.
+export async function verifyKey(
+  file: string,
+  key: KeyMaterial,
+): Promise<boolean> {
+  let probe: SQLite.SQLiteDatabase | null = null;
+  try {
+    probe = await SQLite.openDatabaseAsync(file, { useNewConnection: true });
+    await applyKey(probe, key);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (probe) await probe.closeAsync().catch(() => {});
+  }
+}
+
+// Delete a database file and its -wal/-shm sidecars. The caller must ensure no
+// live connection to it remains.
+export async function deleteDatabaseFile(file: string): Promise<void> {
+  await SQLite.deleteDatabaseAsync(file).catch(() => {});
+}
+
+// Copy the entire contents of one database into a fresh other, changing the key
+// in the process — the crash-safe core of encrypt/decrypt/rekey. The source is
+// opened + verified with `srcKey`; a brand-new `dstFile` is written with `dstKey`
+// via SQLCipher's sqlcipher_export, then re-opened to prove it decrypts. The
+// source is NEVER touched destructively, so a crash leaves it authoritative. The
+// caller flips the active-file pointer and deletes the source only AFTER this
+// resolves.
+export async function exportDatabase(
+  srcFile: string,
+  srcKey: KeyMaterial,
+  dstFile: string,
+  dstKey: KeyMaterial,
+): Promise<void> {
+  // Clear any stale destination from a previously-interrupted run.
+  await SQLite.deleteDatabaseAsync(dstFile).catch(() => {});
+  const src = await SQLite.openDatabaseAsync(srcFile, {
+    useNewConnection: true,
+  });
+  try {
+    await applyKey(src, srcKey); // key + guard + verify source opens
+    // If we're producing an ENCRYPTED destination, make sure SQLCipher is really
+    // compiled in — otherwise the ATTACH … KEY would silently write plaintext.
+    if (dstKey) {
+      const cv = await src.getFirstAsync<{ cipher_version: string | null }>(
+        "PRAGMA cipher_version;",
+      );
+      if (!cv || !cv.cipher_version)
+        throw new Error("SQLCipher unavailable (cipher_version empty)");
+    }
+    // Collapse the WAL into the main file so the export sees a complete DB with
+    // no live sidecars.
+    await src.execAsync("PRAGMA wal_checkpoint(TRUNCATE);");
+    await src.execAsync("PRAGMA journal_mode = DELETE;");
+    const dstPath = `${SQLite.defaultDatabaseDirectory}/${dstFile}`;
+    await src.execAsync(
+      `ATTACH DATABASE '${dstPath}' AS mig KEY ${keyClause(dstKey)};`,
+    );
+    await src.execAsync("SELECT sqlcipher_export('mig');");
+    await src.execAsync("DETACH DATABASE mig;");
+  } finally {
+    await src.closeAsync().catch(() => {});
+  }
+  // Prove the destination opens with its key before the caller trusts it.
+  const ok = await verifyKey(dstFile, dstKey);
+  if (!ok) throw new Error(`export verify failed for ${dstFile}`);
 }
 
 export async function createTask(input: {
