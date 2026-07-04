@@ -270,6 +270,11 @@ export default function Settings({
               placeholder={L.lockPasscodePlaceholder}
               placeholderTextColor={theme.muted}
               secureTextEntry
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="off"
+              spellCheck={false}
+              importantForAutofill="no"
               autoFocus
             />
             <TextInput
@@ -279,6 +284,11 @@ export default function Settings({
               placeholder={L.lockPasscodeConfirmPlaceholder}
               placeholderTextColor={theme.muted}
               secureTextEntry
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="off"
+              spellCheck={false}
+              importantForAutofill="no"
             />
             {pcErr ? <Text style={s.warnText}>{pcErr}</Text> : null}
             <View style={s.btnRow}>
@@ -365,6 +375,11 @@ export default function Settings({
                   placeholder={L.unlockCodePlaceholder}
                   placeholderTextColor={theme.muted}
                   secureTextEntry
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoComplete="off"
+                  spellCheck={false}
+                  importantForAutofill="no"
                   autoFocus
                 />
                 <View style={s.btnRow}>

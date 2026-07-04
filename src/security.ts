@@ -145,26 +145,37 @@ export const setUiTheme = (v: string) => set(K.uiTheme, v);
 export const setUiLang = (v: string) => set(K.uiLang, v);
 
 // ── Passcode (hash+salt; the plaintext code never persists in recoverable mode) ─
+// The code is trimmed at every boundary (set / verify / zk key) so a stray
+// trailing space or newline inserted by the keyboard/IME can't cause the very
+// same passcode to fail to match.
 export async function setPasscode(code: string): Promise<void> {
+  const c = code.trim();
   const salt = toHex(await Crypto.getRandomBytesAsync(16));
   const hash = await Crypto.digestStringAsync(
     Crypto.CryptoDigestAlgorithm.SHA256,
-    salt + code,
+    salt + c,
   );
   await set(K.passcodeSalt, salt);
   await set(K.passcodeHash, hash);
+  console.log(`[KAIROS] setPasscode len=${c.length} raw=${code.length}`);
 }
 export async function verifyPasscode(code: string): Promise<boolean> {
+  const c = code.trim();
   const [salt, hash] = await Promise.all([
     get(K.passcodeSalt),
     get(K.passcodeHash),
   ]);
-  if (!salt || !hash) return false;
+  if (!salt || !hash) {
+    console.log(`[KAIROS] verifyPasscode: salt/hash missing`);
+    return false;
+  }
   const test = await Crypto.digestStringAsync(
     Crypto.CryptoDigestAlgorithm.SHA256,
-    salt + code,
+    salt + c,
   );
-  return test === hash;
+  const ok = test === hash;
+  console.log(`[KAIROS] verifyPasscode len=${c.length} raw=${code.length} match=${ok}`);
+  return ok;
 }
 export async function isPasscodeSet(): Promise<boolean> {
   return !!(await get(K.passcodeHash));
@@ -194,7 +205,7 @@ export const recoverableKeyMaterial = (hex: string): KeyMaterial => ({
 });
 export const passcodeKeyMaterial = (code: string): KeyMaterial => ({
   form: "passphrase",
-  secret: code,
+  secret: code.trim(),
 });
 
 // ── Zero-knowledge biometric convenience cache ───────────────────────────────

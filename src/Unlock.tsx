@@ -119,6 +119,11 @@ export default function Unlock({
           placeholder={L.unlockCodePlaceholder}
           placeholderTextColor={theme.muted}
           secureTextEntry
+          autoCapitalize="none"
+          autoCorrect={false}
+          autoComplete="off"
+          spellCheck={false}
+          importantForAutofill="no"
           autoFocus={!biometricAvailable}
           editable={!busy && lockedFor === 0}
           onSubmitEditing={submit}

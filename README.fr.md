@@ -17,6 +17,7 @@ Maintenez l'orbe, parlez naturellement : Kairos vous comprend, classe la tâche 
 
 - 🎙️ **Voice-first** — une orbe « maintenir pour parler » ; des commandes en langage naturel.
 - 📴 **100 % hors-ligne & privé** — LLM embarqué + SQLite local. **0 donnée envoyée par l'app.** Le modèle (~3 Go) se télécharge une seule fois, puis tout fonctionne hors-ligne.
+- 🔒 **Verrou & chiffrement optionnels** — verrou d'application par biométrie/code et chiffrement complet de la base (SQLCipher), opt-in, 100 % sur l'appareil (voir plus bas).
 - 🧠 **IA embarquée** — Gemma 4 E2B via `llama.rn` (CPU uniquement, `n_ctx` 4096). Le modèle ne fait que *proposer* une intention ; du code déterministe l'*exécute*.
 - 🗣️ **Gestion de tâches en langage naturel** — créer, replanifier, renommer, reprioriser, accomplir, reporter, supprimer — à la voix.
 - 🗂️ **Classement automatique** — les tâches sont rangées en dossiers (catégories) et sous-dossiers, avec la personne, le lieu, la date et l'urgence déduits automatiquement.
@@ -103,6 +104,19 @@ Choisissez un style pendant le téléchargement unique du modèle, ou changez-en
 
 ---
 
+## Verrouillage & chiffrement (opt-in)
+
+Kairos est privé par défaut ; pour une couche supplémentaire, vous pouvez verrouiller l'application et chiffrer sa base de données — le tout sur l'appareil, sans compte, sans réseau.
+
+- **Verrou d'application** — exigez votre empreinte / visage (avec le code de votre téléphone en repli) ou un code propre à Kairos à l'ouverture. À régler dans Réglages → **Verrouillage**.
+- **Chiffrement au repos** — chiffre toute la base sur le disque via **SQLCipher**. À activer dans Réglages → **Chiffrement**.
+- **Deux modes de clé :**
+  - **Récupérable** (par défaut) — une clé aléatoire est conservée dans l'**Android Keystore**, indépendante de votre code. Réinitialiser le verrou ne perd jamais les données.
+  - **Zéro-connaissance** (opt-in, derrière un avertissement explicite) — la clé est dérivée de votre code ; rien sur l'appareil ne peut déchiffrer sans lui. **Code oublié = données perdues définitivement** — aucune récupération, par conception.
+- Tout est désactivé par défaut et réversible ; activer ou désactiver le chiffrement migre la base en toute sécurité — vos données ne sont jamais détruites en cours de migration.
+
+---
+
 ## Synchronisation Google Agenda (opt-in)
 
 Kairos peut **alimenter un agenda Google** avec vos tâches datées, tout en restant fidèle à sa promesse hors-ligne.
@@ -121,7 +135,8 @@ Kairos peut **alimenter un agenda Google** avec vos tâches datées, tout en res
 | Framework | Expo SDK 56 · React Native 0.85 · TypeScript · Hermes |
 | LLM embarqué | **Gemma 4 E2B** (GGUF) via `llama.rn` — CPU, `n_ctx` 4096 |
 | Voix | `expo-speech-recognition` (STT) · `expo-speech` (TTS) |
-| Stockage | `expo-sqlite` |
+| Stockage | `expo-sqlite` (chiffrement au repos optionnel via **SQLCipher**) |
+| Sécurité | `expo-secure-store` (Android Keystore) · `expo-local-authentication` (biométrie) · `expo-crypto` |
 | Interface | `react-native-svg` (orbe animée), `expo-linear-gradient`, polices Google embarquées via `expo-font` |
 | Synchro agenda | `expo-calendar` (écrit dans l'agenda de l'appareil) |
 

@@ -17,6 +17,7 @@ Hold the orb, speak naturally, and Kairos understands you, files the task, and a
 
 - 🎙️ **Voice-first** — a push-to-talk orb; speak commands in natural language.
 - 📴 **100% offline & private** — on-device LLM + local SQLite. **0 data sent by the app.** The ~3 GB model is fetched once, then everything runs offline.
+- 🔒 **Optional lock & encryption** — a biometric/passcode app lock and full SQLCipher database encryption, opt-in, all on-device (see below).
 - 🧠 **On-device AI** — Gemma 4 E2B via `llama.rn` (CPU-only, `n_ctx` 4096). The model only *proposes* an intent; deterministic code *executes* it.
 - 🗣️ **Natural-language task management** — create, reschedule, rename, reprioritize, complete, postpone, delete — by voice.
 - 🗂️ **Auto-filing** — tasks are sorted into folders (categories) and subfolders, with person, place, time and urgency inferred automatically.
@@ -103,6 +104,19 @@ Choose a look during the one-time model download, or change it anytime in **Sett
 
 ---
 
+## App lock & encryption (opt-in)
+
+Kairos is private by default; for an extra layer you can lock the app and encrypt its database — all on-device, no accounts, no network.
+
+- **App lock** — require your fingerprint/face (with your phone PIN as fallback) or a Kairos-specific passcode to open the app. Set it in Settings → **Lock**.
+- **At-rest encryption** — encrypt the whole database on disk with **SQLCipher**. Enable it in Settings → **Encryption**.
+- **Two key modes:**
+  - **Recoverable** (default) — a random key is kept in the **Android Keystore**, independent of your passcode. Resetting your lock never loses data.
+  - **Zero-knowledge** (opt-in, behind an explicit warning) — the key is derived from your passcode; nothing on the device can decrypt without it. **Forget the passcode and the data is gone for good** — no recovery, by design.
+- Everything is off by default and reversible; turning encryption on or off migrates the database safely — your data is never destroyed mid-migration.
+
+---
+
 ## Google Calendar sync (opt-in)
 
 Kairos can **feed a Google calendar** with your dated tasks, while staying true to its offline-first promise.
@@ -121,7 +135,8 @@ Kairos can **feed a Google calendar** with your dated tasks, while staying true 
 | Framework | Expo SDK 56 · React Native 0.85 · TypeScript · Hermes |
 | On-device LLM | **Gemma 4 E2B** (GGUF) via `llama.rn` — CPU, `n_ctx` 4096 |
 | Voice | `expo-speech-recognition` (STT) · `expo-speech` (TTS) |
-| Storage | `expo-sqlite` |
+| Storage | `expo-sqlite` (optional at-rest encryption via **SQLCipher**) |
+| Security | `expo-secure-store` (Android Keystore) · `expo-local-authentication` (biometrics) · `expo-crypto` |
 | UI | `react-native-svg` (animated orb), `expo-linear-gradient`, bundled Google fonts via `expo-font` |
 | Calendar sync | `expo-calendar` (writes to the device calendar) |
 
@@ -150,6 +165,7 @@ On first launch the model loads (one-time), then Kairos runs fully offline.
 
 - **The app sends nothing.** Speech recognition, understanding, storage and speech synthesis all happen on-device.
 - Tasks live in a **local SQLite** database on your phone.
+- Optionally, an **app lock** (biometric/passcode) and **full database encryption** (SQLCipher) protect the data at rest — see above. Keys live in the Android Keystore (recoverable mode) or are derived from your passcode (zero-knowledge mode); no key ever leaves the device.
 - The **only** optional outbound flow is Google Calendar sync — and even then the app just writes to the local device calendar; your **OS** (not Kairos) syncs it to your Google account.
 
 ---

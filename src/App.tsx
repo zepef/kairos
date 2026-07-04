@@ -635,6 +635,9 @@ export default function App() {
     if (!st) return "bad";
     if (lockoutUntil && lockoutUntil > Date.now()) return "lockedout";
     const zk = st.encEnabled && st.keyMode === "zk";
+    console.log(
+      `[KAIROS] passcode unlock: zk=${zk} enc=${st.encEnabled} passcodeSet=${st.passcodeSet} lock=${st.lockEnabled}`,
+    );
     if (!zk && st.passcodeSet && !(await security.verifyPasscode(code))) {
       registerFail();
       return "bad";
@@ -2109,6 +2112,11 @@ function RecoveryScreen({
             placeholder={L.unlockCodePlaceholder}
             placeholderTextColor={theme.muted}
             secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            autoComplete="off"
+            spellCheck={false}
+            importantForAutofill="no"
             editable={!busy}
             onSubmitEditing={submit}
             style={{

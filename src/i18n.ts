@@ -71,7 +71,7 @@ const FR = {
   noTasksCriteria: "Aucune tâche pour ces critères.",
   miscFolder: "Divers",
   testChip: "Tester",
-  versionLabel: "Kairos version 0.8",
+  versionLabel: "Kairos version 1.0",
   // display title qualifiers
   qualUrgent: "urgent",
   qualFor: (c: string) => `pour ${c}`,
@@ -316,7 +316,7 @@ const EN: Strings = {
   noTasksCriteria: "No tasks for these filters.",
   miscFolder: "Misc",
   testChip: "Test",
-  versionLabel: "Kairos version 0.8",
+  versionLabel: "Kairos version 1.0",
   qualUrgent: "urgent",
   qualFor: (c: string) => `for ${c}`,
   qualWith: (p: string) => `with ${p}`,
