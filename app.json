@@ -17,7 +17,8 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.zepef.kairos"
+      "package": "com.zepef.kairos",
+      "allowBackup": false
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -29,6 +30,19 @@
         "expo-calendar",
         {
           "calendarPermission": "Kairos écrit vos tâches datées dans l'agenda Google que vous choisissez."
+        }
+      ],
+      [
+        "expo-sqlite",
+        {
+          "useSQLCipher": true
+        }
+      ],
+      "expo-secure-store",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Kairos utilise la biométrie pour déverrouiller l'application."
         }
       ]
     ]
