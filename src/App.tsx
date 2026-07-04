@@ -244,6 +244,7 @@ export default function App() {
   const dbKeyRef = useRef<KeyMaterial>(null); // the key the DB is currently open with
   const bgSince = useRef(0); // when the app last went to background (re-lock timer)
   const failCount = useRef(0); // consecutive wrong-passcode attempts
+  const migrationInFlight = useRef(false); // synchronous guard against concurrent migrations
 
   const [modelStatus, setModelStatus] = useState<ModelStatus>("unloaded");
   const [loadPct, setLoadPct] = useState(0);
@@ -381,6 +382,15 @@ export default function App() {
   const bootDb = async (key: KeyMaterial, file: string) => {
     await initDb({ key, file }); // throws on a wrong/missing key
     dbKeyRef.current = key;
+    // Crash-safety sweep: once the authoritative DB is proven open, remove any
+    // stale canonical slot left by an interrupted migration (e.g. a plaintext copy
+    // that survived enabling encryption). Guarded to run ONLY when we opened WITH
+    // a key (encrypted mode, verified) — so a secure-store/disk desync that fell
+    // back to plaintext can never make this delete the real encrypted data.
+    if (key) {
+      for (const f of [security.PLAIN_DB, security.ENC_DB_A, security.ENC_DB_B])
+        if (f !== file) deleteDatabaseFile(f).catch(() => {});
+    }
     try {
       const savedTheme = await getSetting("theme");
       if (isThemeName(savedTheme)) {
@@ -417,6 +427,7 @@ export default function App() {
         const st = await security.loadSecurity();
         setSec(st);
         setLockoutUntil(st.lockoutUntil);
+        failCount.current = await security.getFailCount();
         setBiometricAvail(await security.biometricAvailable());
         setSecurityChecked(true);
         const needUnlock =
@@ -435,7 +446,15 @@ export default function App() {
             await bootDb(key, st.activeDbFile);
           } catch (e: any) {
             addLog(`✗ db open: ${e?.message ?? e}`);
-            if (st.encEnabled) setRecover(true);
+            if (st.encEnabled) {
+              setRecover(true);
+            } else {
+              // Plaintext open failed and no lock is configured — match the
+              // pre-lock degraded behavior (proceed into the app + still load the
+              // model) rather than funneling the user through a bogus passcode gate.
+              setUnlocked(true);
+              loadGemma();
+            }
           }
         }
       } catch (e: any) {
@@ -554,6 +573,7 @@ export default function App() {
 
   const registerFail = () => {
     failCount.current += 1;
+    security.setFailCount(failCount.current).catch(() => {}); // survive an app kill
     if (failCount.current >= LOCK_MAX_FAILS) {
       const steps = Math.min(5, failCount.current - LOCK_MAX_FAILS + 1); // 1..5
       const until = Date.now() + 30_000 * steps; // 30s, 60s, … capped at 150s
@@ -564,6 +584,7 @@ export default function App() {
   const resetFails = () => {
     failCount.current = 0;
     setLockoutUntil(null);
+    security.setFailCount(0).catch(() => {});
     security.setLockoutUntil(null).catch(() => {});
   };
 
@@ -604,18 +625,22 @@ export default function App() {
     }
   };
 
-  // Passcode unlock: verify the hash (fast reject), resolve the key, open the DB.
+  // Passcode unlock. In zk mode the passcode IS the encryption key, so the DB
+  // open ITSELF is the authoritative check (NOT the stored hash). This makes a
+  // partially-failed zk passcode change non-fatal: the truly-correct code still
+  // opens the DB even if the hash is stale. In non-zk modes the key is
+  // independent of the passcode, so the hash is the gate (fast reject).
   const attemptPasscodeUnlock = async (code: string): Promise<UnlockResult> => {
     const st = sec;
     if (!st) return "bad";
     if (lockoutUntil && lockoutUntil > Date.now()) return "lockedout";
-    if (st.passcodeSet && !(await security.verifyPasscode(code))) {
+    const zk = st.encEnabled && st.keyMode === "zk";
+    if (!zk && st.passcodeSet && !(await security.verifyPasscode(code))) {
       registerFail();
       return "bad";
     }
     let key: KeyMaterial = null;
-    if (st.encEnabled && st.keyMode === "zk")
-      key = security.passcodeKeyMaterial(code);
+    if (zk) key = security.passcodeKeyMaterial(code);
     else if (st.encEnabled) {
       const hex = await security.getRecoverableKey();
       if (!hex) {
@@ -627,12 +652,11 @@ export default function App() {
     try {
       await bootDb(key, st.activeDbFile);
     } catch {
-      registerFail();
+      registerFail(); // zk: wrong code → SQLCipher NOTADB
       return "bad";
     }
     resetFails();
-    if (st.encEnabled && st.keyMode === "zk" && st.zkBiometric)
-      security.cacheZkPasscode(code).catch(() => {});
+    if (zk && st.zkBiometric) security.cacheZkPasscode(code).catch(() => {});
     return "ok";
   };
 
@@ -643,6 +667,8 @@ export default function App() {
     msg: string,
     fn: () => Promise<void>,
   ): Promise<boolean> => {
+    if (migrationInFlight.current) return false; // sync guard: no concurrent migrations
+    migrationInFlight.current = true;
     setSecurityBusyMsg(msg);
     setSecurityBusy(true);
     try {
@@ -656,93 +682,95 @@ export default function App() {
       } catch (e2: any) {
         addLog(`✗ reopen: ${e2?.message ?? e2}`);
       }
+      // If the DB is STILL closed after every reopen attempt, don't drop back to
+      // the normal UI with a dead database — route to recovery so there's a way out.
+      if (!isDbOpen()) setRecover(true);
       setSec(await security.loadSecurity());
       return false;
     } finally {
       setSecurityBusy(false);
+      migrationInFlight.current = false;
     }
   };
 
   const nextEncSlot = (cur: string) =>
     cur === security.ENC_DB_A ? security.ENC_DB_B : security.ENC_DB_A;
 
-  // Plaintext → encrypted (recoverable). Export to the encrypted slot, verify,
-  // atomically flip the db-state, delete the old plaintext, reopen.
-  const encryptOp = async () => {
-    const hex = await security.ensureRecoverableKey();
-    const key = security.recoverableKeyMaterial(hex);
-    const ds = await security.getDbState();
-    const from = ds.activeDbFile;
-    const to = security.ENC_DB_A;
+  // The one crash-safe migration primitive shared by encrypt/decrypt/rekey.
+  // Invariant: the source is never destroyed before the destination is written
+  // AND verified (inside exportDatabase) AND the atomic db-state pointer is
+  // flipped. The `committed` flag records exactly which side we're on, so ANY
+  // failure reopens the file that is actually authoritative — using the LOCAL
+  // from/to keys, never the shared mutable dbKeyRef (which could be mid-update).
+  const migrate = async (
+    from: string,
+    fromKey: KeyMaterial,
+    to: string,
+    toKey: KeyMaterial,
+    newState: security.DbState,
+  ): Promise<void> => {
     await closeDb();
+    let committed = false;
     try {
-      await exportDatabase(from, null, to, key);
-    } catch (e) {
-      await initDb({ key: null, file: from }); // source untouched
+      await exportDatabase(from, fromKey, to, toKey); // dest written + verified
+      await security.setDbState(newState); // single atomic commit
+      committed = true;
+      await deleteDatabaseFile(from);
+      await initDb({ key: toKey, file: to });
+      dbKeyRef.current = toKey;
       await refreshTasks();
+    } catch (e) {
+      // Reopen whichever file is authoritative NOW, with its matching local key.
+      try {
+        if (committed) {
+          await initDb({ key: toKey, file: to });
+          dbKeyRef.current = toKey;
+        } else {
+          await initDb({ key: fromKey, file: from }); // source untouched
+          dbKeyRef.current = fromKey;
+        }
+        await refreshTasks();
+      } catch (e2: any) {
+        addLog(`✗ reopen: ${e2?.message ?? e2}`);
+      }
       throw e;
     }
-    dbKeyRef.current = key;
-    await security.setDbState({
-      encEnabled: true,
-      keyMode: "recoverable",
-      activeDbFile: to,
-    });
-    await deleteDatabaseFile(from);
-    await initDb({ key, file: to });
-    await refreshTasks();
   };
 
-  // Encrypted → plaintext. Reverse of encryptOp; wipes the key material.
+  // Plaintext → encrypted (recoverable).
+  const encryptOp = async () => {
+    const key = security.recoverableKeyMaterial(
+      await security.ensureRecoverableKey(),
+    );
+    const from = (await security.getDbState()).activeDbFile;
+    await migrate(from, null, security.ENC_DB_A, key, {
+      encEnabled: true,
+      keyMode: "recoverable",
+      activeDbFile: security.ENC_DB_A,
+    });
+  };
+
+  // Encrypted → plaintext. Only wipe the key material AFTER a successful decrypt
+  // (migrate throws on failure, so these lines don't run if the DB is still enc).
   const decryptOp = async () => {
-    const ds = await security.getDbState();
-    const from = ds.activeDbFile;
-    const to = security.PLAIN_DB;
-    const curKey = dbKeyRef.current;
-    await closeDb();
-    try {
-      await exportDatabase(from, curKey, to, null);
-    } catch (e) {
-      await initDb({ key: curKey, file: from });
-      await refreshTasks();
-      throw e;
-    }
-    dbKeyRef.current = null;
-    await security.setDbState({
+    const from = (await security.getDbState()).activeDbFile;
+    await migrate(from, dbKeyRef.current, security.PLAIN_DB, null, {
       encEnabled: false,
       keyMode: "recoverable",
-      activeDbFile: to,
+      activeDbFile: security.PLAIN_DB,
     });
-    await deleteDatabaseFile(from);
     await security.deleteRecoverableKey();
     await security.clearZkPasscodeCache();
-    await initDb({ key: null, file: to });
-    await refreshTasks();
   };
 
   // Re-encrypt under a new key/mode (recoverable↔zk, or zk passcode change).
   const rekeyOp = async (newKey: KeyMaterial, newMode: security.KeyMode) => {
-    const ds = await security.getDbState();
-    const from = ds.activeDbFile;
-    const to = nextEncSlot(from);
-    const curKey = dbKeyRef.current;
-    await closeDb();
-    try {
-      await exportDatabase(from, curKey, to, newKey);
-    } catch (e) {
-      await initDb({ key: curKey, file: from });
-      await refreshTasks();
-      throw e;
-    }
-    dbKeyRef.current = newKey;
-    await security.setDbState({
+    const from = (await security.getDbState()).activeDbFile;
+    await migrate(from, dbKeyRef.current, nextEncSlot(from), newKey, {
       encEnabled: true,
       keyMode: newMode,
-      activeDbFile: to,
+      activeDbFile: nextEncSlot(from),
     });
-    await deleteDatabaseFile(from);
-    await initDb({ key: newKey, file: to });
-    await refreshTasks();
   };
 
   // ── Settings-facing security handlers ──
@@ -786,7 +814,8 @@ export default function App() {
 
   const onDisableZk = async () => {
     await runMigration(L.encRekeying, async () => {
-      const hex = await security.ensureRecoverableKey(); // fresh random key
+      await security.deleteRecoverableKey(); // drop any orphaned key → force fresh
+      const hex = await security.ensureRecoverableKey();
       await rekeyOp(security.recoverableKeyMaterial(hex), "recoverable");
       await security.clearZkPasscodeCache();
     });
@@ -1534,15 +1563,24 @@ export default function App() {
   } else if (securityBusy) {
     // A blocking DB migration (encrypt/decrypt/re-key) is running.
     content = <MigrationBlocker theme={theme} message={securityBusyMsg} />;
-  } else if (!unlocked) {
-    // App-lock gate: biometric + passcode.
+  } else if (
+    !unlocked &&
+    (sec?.lockEnabled || (sec?.encEnabled && sec?.keyMode === "zk"))
+  ) {
+    // App-lock gate: biometric + passcode. Only shown when a lock/zk is actually
+    // configured — a plaintext-open failure must never funnel an unconfigured user
+    // into a passcode screen they can't satisfy. The biometric affordance is hidden
+    // in strict zk (biometric explicitly turned off) so there's no dead button.
+    const biometricOffered =
+      biometricAvail &&
+      !(sec?.encEnabled && sec.keyMode === "zk" && !sec.zkBiometric);
     content = (
       <Unlock
         lang={lang}
         setLang={changeLang}
         L={L}
-        biometricAvailable={biometricAvail}
-        autoBiometric={!(sec?.encEnabled && sec.keyMode === "zk" && !sec.zkBiometric)}
+        biometricAvailable={biometricOffered}
+        autoBiometric={biometricOffered}
         onBiometric={attemptBiometricUnlock}
         onPasscode={attemptPasscodeUnlock}
         lockoutUntil={lockoutUntil}

@@ -26,6 +26,7 @@ const K = {
   dek: "kairos.sec.dek", // recoverable data-encryption key (hex)
   zkPasscodeCache: "kairos.sec.zkPasscodeCache", // biometric-gated passcode (zk convenience)
   lockoutUntil: "kairos.sec.lockoutUntil",
+  failCount: "kairos.sec.failCount", // persisted so a restart can't reset the backoff
   uiTheme: "kairos.ui.theme",
   uiLang: "kairos.ui.lang",
 } as const;
@@ -253,6 +254,11 @@ export async function authenticate(prompt: string): Promise<boolean> {
 // ── Lockout (brute-force backoff), persisted so it survives an app kill ───────
 export const setLockoutUntil = (ms: number | null) =>
   ms ? set(K.lockoutUntil, String(ms)) : del(K.lockoutUntil);
+// Fail count is persisted too: otherwise killing + relaunching the app before the
+// threshold would reset the counter and defeat the backoff entirely.
+export const getFailCount = async () => Number((await get(K.failCount)) || "0");
+export const setFailCount = (n: number) =>
+  n > 0 ? set(K.failCount, String(n)) : del(K.failCount);
 
 // ── Full wipe of all security state (used by the destructive recovery reset) ──
 export async function wipeSecurity(): Promise<void> {
