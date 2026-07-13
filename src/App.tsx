@@ -215,6 +215,7 @@ export default function App() {
   // below the status bar AND stays interactive.
   const insets = useSafeAreaInsets();
   const [status, setStatus] = useState<Status>("idle");
+  const [micOn, setMicOn] = useState(false); // intended mic state (tap-to-toggle)
   const [log, setLog] = useState<string[]>([]);
   const [testIdx, setTestIdx] = useState(0);
   // Active UI/voice language (FR launch default), toggled by the flags. Drives
@@ -491,6 +492,7 @@ export default function App() {
 
   useSpeechRecognitionEvent("start", () => {
     setStatus("listening");
+    setMicOn(true);
     // A new utterance begins: clear the previous summary right away so the top
     // panel is replaced by the new intent (shows "À l'écoute…" meanwhile).
     setHeard("");
@@ -510,10 +512,16 @@ export default function App() {
   useSpeechRecognitionEvent("error", (event) => {
     addLog(`✗ error: ${event.error} — ${event.message}`);
     setStatus("idle");
+    setMicOn(false);
   });
 
+  // The recognizer also ends by itself (silence timeout, continuous:false). Clear
+  // the intended state too, or the orb would keep offering "tap to stop" on a mic
+  // that is already closed — and the next tap would stop nothing instead of
+  // starting a new utterance.
   useSpeechRecognitionEvent("end", () => {
     setStatus((s) => (s === "speaking" ? s : "idle"));
+    setMicOn(false);
   });
 
   const speak = (text: string) => {
@@ -1240,11 +1248,13 @@ export default function App() {
     }
   };
 
-  const startListening = async () => {
+  // Returns whether the recognizer was actually started, so the caller can undo
+  // its optimistic "mic is on" state when the permission is refused.
+  const startListening = async (): Promise<boolean> => {
     const perm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
     if (!perm.granted) {
       addLog(`✗ ${L.micDenied}`);
-      return;
+      return false;
     }
     ExpoSpeechRecognitionModule.start({
       lang: STT_LANG[lang],
@@ -1256,9 +1266,27 @@ export default function App() {
         EXTRA_PREFER_OFFLINE: true, // Kairos is offline-first
       },
     });
+    return true;
   };
 
   const stopListening = () => ExpoSpeechRecognitionModule.stop();
+
+  // Tap to start, tap again to stop — hold-to-talk is unusable one-handed in a
+  // bus or a train. `micOn` is the INTENDED state and flips optimistically on the
+  // tap: `status` only turns "listening" once the recognizer's async "start" event
+  // lands, so keying off it would let a quick second tap fire a second start().
+  // The recognizer also stops on its own (silence, error) — the SR events below
+  // put `micOn` back to false, so the UI can't claim it is still listening.
+  const toggleListening = async () => {
+    if (processing) return;
+    if (micOn) {
+      setMicOn(false);
+      stopListening();
+      return;
+    }
+    setMicOn(true);
+    if (!(await startListening())) setMicOn(false);
+  };
 
   // Temporal window (level 2) for the display command.
   const scopeBounds = (s: Scope): [number, number] => {
@@ -1493,10 +1521,10 @@ export default function App() {
     status === "listening" ? "listening" : processing ? "understanding" : "idle";
   const orbLabel =
     status === "listening"
-      ? L.orbHoldListening
+      ? L.orbTapListening
       : processing
         ? L.orbUnderstanding
-        : L.orbHoldIdle;
+        : L.orbTapIdle;
   const orbSub = status === "listening" ? L.orbSubListening : L.orbSub;
 
   // The detected-intent line shown in the calendar header, right of the date:
@@ -1510,13 +1538,12 @@ export default function App() {
         : summary;
   const calIntentEmoji = status === "listening" || processing ? "" : summaryEmoji;
 
-  // The orb doubles as the push-to-talk button once ready: hold to listen. It is
+  // The orb doubles as the mic button once ready: tap to start, tap to stop. It is
   // disabled while an utterance is still being understood/displayed (processing)
   // so a new command can't start before the current one is fully resolved.
   const renderTalk = (size: number) => (
     <Pressable
-      onPressIn={startListening}
-      onPressOut={stopListening}
+      onPress={toggleListening}
       disabled={processing}
       hitSlop={12}
       style={({ pressed }) => ({
@@ -1544,7 +1571,7 @@ export default function App() {
   // cue now that the orb is actually on screen.
   const handleStart = () => {
     setStarted(true);
-    speak(L.holdButton);
+    speak(L.tapButton);
   };
 
   const runTest = () => {
