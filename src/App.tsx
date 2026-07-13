@@ -11,6 +11,7 @@ import {
   View,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Speech from "expo-speech";
 import {
   ExpoSpeechRecognitionModule,
@@ -40,6 +41,7 @@ import {
   listTasks,
   setSetting,
   updateTaskById,
+  verifyKey,
   type KeyMaterial,
   type Revert,
   type Task,
@@ -208,6 +210,10 @@ function buildFolders(items: Task[], miscLabel: string): Folder[] {
 }
 
 export default function App() {
+  // Real system-bar insets (Android 15 edge-to-edge). Used to pad headers/docks
+  // instead of a hardcoded status-bar height, so the top of the screen renders
+  // below the status bar AND stays interactive.
+  const insets = useSafeAreaInsets();
   const [status, setStatus] = useState<Status>("idle");
   const [log, setLog] = useState<string[]>([]);
   const [testIdx, setTestIdx] = useState(0);
@@ -313,7 +319,10 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [themeName],
   );
-  const styles = useMemo(() => makeStyles(theme), [theme]);
+  const styles = useMemo(
+    () => makeStyles(theme, insets.top, insets.bottom),
+    [theme, insets.top, insets.bottom],
+  );
 
   // Language change that also persists the choice.
   const changeLang = (l: Lang) => {
@@ -635,12 +644,18 @@ export default function App() {
     if (!st) return "bad";
     if (lockoutUntil && lockoutUntil > Date.now()) return "lockedout";
     const zk = st.encEnabled && st.keyMode === "zk";
-    console.log(
-      `[KAIROS] passcode unlock: zk=${zk} enc=${st.encEnabled} passcodeSet=${st.passcodeSet} lock=${st.lockEnabled}`,
-    );
-    if (!zk && st.passcodeSet && !(await security.verifyPasscode(code))) {
-      registerFail();
-      return "bad";
+    // Non-zk: the hash is the gate. A lock with no verifiable passcode is an
+    // inconsistent state — NOT a free pass. (Letting it through would unlock the
+    // app for ANY input.)
+    if (!zk) {
+      if (!st.passcodeSet) {
+        setRecover(true);
+        return "bad";
+      }
+      if (!(await security.verifyPasscode(code))) {
+        registerFail();
+        return "bad";
+      }
     }
     let key: KeyMaterial = null;
     if (zk) key = security.passcodeKeyMaterial(code);
@@ -652,15 +667,57 @@ export default function App() {
       }
       key = security.recoverableKeyMaterial(hex);
     }
+    // zk: the code IS the key, so SQLCipher opening the file is the real check.
+    // But bootDb → initDb early-returns when the handle is already open (it stays
+    // open across a background re-lock), which would make that check a no-op and
+    // let ANY code back in. Prove the key against the file on its own connection.
+    if (zk && !(await verifyKey(st.activeDbFile, key))) {
+      registerFail();
+      return "bad";
+    }
     try {
       await bootDb(key, st.activeDbFile);
     } catch {
-      registerFail(); // zk: wrong code → SQLCipher NOTADB
+      registerFail();
       return "bad";
     }
     resetFails();
     if (zk && st.zkBiometric) security.cacheZkPasscode(code).catch(() => {});
     return "ok";
+  };
+
+  // Escape hatch: a locked-out user must never be trapped out of UNENCRYPTED data.
+  // In zk mode the passcode IS the key, so a reset would lose data → route to the
+  // recovery screen instead. In plaintext / recoverable mode the key is independent
+  // of the passcode, so we can safely drop the lock and open the DB — zero data loss.
+  //
+  // GATED ON DEVICE AUTHENTICATION. Without this the button IS the bypass: anyone
+  // holding the phone taps once from the lock screen and is inside. Proving you can
+  // unlock the DEVICE (biometric, or its PIN/pattern via the fallback) is what earns
+  // the right to drop Kairos's own lock.
+  const handleResetLock = async () => {
+    const st = sec;
+    if (st?.encEnabled && st.keyMode === "zk") {
+      setRecover(true);
+      return;
+    }
+    if (!(await security.authenticate(L.unlockResetPrompt))) return;
+    await security.clearPasscode();
+    await security.setLockEnabled(false);
+    resetFails();
+    const fresh = await security.loadSecurity();
+    setSec(fresh);
+    let key: KeyMaterial = null;
+    if (fresh.encEnabled) {
+      const hex = await security.getRecoverableKey();
+      key = hex ? security.recoverableKeyMaterial(hex) : null;
+    }
+    try {
+      await bootDb(key, fresh.activeDbFile);
+    } catch {
+      setUnlocked(true);
+      loadGemma();
+    }
   };
 
   // ── Encryption migrations (blocking, crash-safe) ──
@@ -1587,6 +1644,7 @@ export default function App() {
         onBiometric={attemptBiometricUnlock}
         onPasscode={attemptPasscodeUnlock}
         lockoutUntil={lockoutUntil}
+        onResetLock={handleResetLock}
       />
     );
   } else if (!started) {
@@ -1811,13 +1869,17 @@ export default function App() {
   );
 }
 
-function makeStyles(t: Theme) {
+function makeStyles(t: Theme, insetTop: number, insetBottom: number) {
+  // Under Android 15 edge-to-edge the app draws behind the system bars, so the
+  // real inset (not a hardcoded 50) must pad the top; a small floor keeps a sane
+  // gap on devices that report a tiny/zero top inset.
+  const headerTop = Math.max(insetTop, 12);
   return StyleSheet.create({
     screen: { flex: 1, backgroundColor: t.bg },
 
     // ── Home header ──
     header: {
-      paddingTop: 50,
+      paddingTop: headerTop,
       paddingHorizontal: 16,
       paddingBottom: 4,
       flexDirection: "row",
@@ -1841,7 +1903,7 @@ function makeStyles(t: Theme) {
 
     // ── List / candidates header ──
     pageHeader: {
-      paddingTop: 50,
+      paddingTop: headerTop,
       paddingHorizontal: 20,
       paddingBottom: 4,
       flexDirection: "row",
@@ -1987,7 +2049,11 @@ function makeStyles(t: Theme) {
     },
     taskDue: { fontFamily: t.body.semibold, fontSize: 12.5, marginTop: 1 },
 
-    dockTalk: { alignItems: "center", paddingVertical: 8, paddingBottom: 47 },
+    dockTalk: {
+      alignItems: "center",
+      paddingTop: 8,
+      paddingBottom: Math.max(insetBottom + 8, 20),
+    },
   });
 }
 

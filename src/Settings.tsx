@@ -12,6 +12,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTheme } from "./ThemeContext";
 import { THEMES, THEME_ORDER, type Theme } from "./theme";
 import { LangToggle } from "./flags";
@@ -76,13 +77,15 @@ export default function Settings({
   onSetZkBiometric: (b: boolean) => Promise<void>;
 }) {
   const { theme, name, setTheme } = useTheme();
-  const s = makeStyles(theme);
+  const insets = useSafeAreaInsets();
+  const s = makeStyles(theme, insets.top);
   const [syncMsg, setSyncMsg] = useState("");
   // Passcode-set inline flow (used both to first-set and to change the code).
   const [pcOpen, setPcOpen] = useState(false);
   const [pc1, setPc1] = useState("");
   const [pc2, setPc2] = useState("");
   const [pcErr, setPcErr] = useState("");
+  const [pcBusy, setPcBusy] = useState(false); // no concurrent setPasscode runs
   // Zero-knowledge activation inline flow (re-enter the passcode to derive key).
   const [zkOpen, setZkOpen] = useState(false);
   const [zkPc, setZkPc] = useState("");
@@ -95,12 +98,18 @@ export default function Settings({
     setPcErr("");
   };
   const savePasscode = async () => {
+    if (pcBusy) return; // a second tap must never start a second setPasscode run
     if (pc1.length < 4) return setPcErr(L.lockPasscodeTooShort);
     if (pc1 !== pc2) return setPcErr(L.lockPasscodeMismatch);
-    await onSetPasscode(pc1);
-    if (!lockEnabled) await onToggleLock(true); // first-set also enables the lock
-    closePasscode();
-    setSecMsg(L.lockPasscodeSaved);
+    setPcBusy(true);
+    try {
+      await onSetPasscode(pc1);
+      if (!lockEnabled) await onToggleLock(true); // first-set also enables the lock
+      closePasscode();
+      setSecMsg(L.lockPasscodeSaved);
+    } finally {
+      setPcBusy(false);
+    }
   };
   const onLockSwitch = async (b: boolean) => {
     setSecMsg("");
@@ -138,7 +147,15 @@ export default function Settings({
         </Pressable>
       </View>
 
-      <ScrollView contentContainerStyle={s.body} showsVerticalScrollIndicator={false}>
+      {/* keyboardShouldPersistTaps: without it (RN default "never") the first tap
+          on any control while the keyboard is up is swallowed to dismiss it — so
+          "Enregistrer" under the auto-focused passcode field silently did nothing,
+          and users tapped again and again. */}
+      <ScrollView
+        contentContainerStyle={s.body}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
         {/* Apparence */}
         <Text style={s.section}>{L.settingsAppearance}</Text>
         <View style={s.tileRow}>
@@ -292,10 +309,14 @@ export default function Settings({
             />
             {pcErr ? <Text style={s.warnText}>{pcErr}</Text> : null}
             <View style={s.btnRow}>
-              <Pressable style={s.secBtn} onPress={savePasscode}>
+              <Pressable
+                style={[s.secBtn, pcBusy && s.btnDisabled]}
+                onPress={savePasscode}
+                disabled={pcBusy}
+              >
                 <Text style={s.secBtnText}>{L.lockSave}</Text>
               </Pressable>
-              <Pressable style={s.secBtn} onPress={closePasscode}>
+              <Pressable style={s.secBtn} onPress={closePasscode} disabled={pcBusy}>
                 <Text style={s.secBtnMuted}>{L.lockCancel}</Text>
               </Pressable>
             </View>
@@ -424,9 +445,9 @@ export default function Settings({
   );
 }
 
-function makeStyles(t: Theme) {
+function makeStyles(t: Theme, insetTop: number) {
   return StyleSheet.create({
-    screen: { flex: 1, backgroundColor: t.bg, paddingTop: 54 },
+    screen: { flex: 1, backgroundColor: t.bg, paddingTop: Math.max(insetTop, 12) },
     header: {
       paddingHorizontal: 20,
       paddingBottom: 8,

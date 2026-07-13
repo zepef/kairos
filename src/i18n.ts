@@ -180,6 +180,8 @@ const FR = {
   unlockBiometricPrompt: "Déverrouiller Kairos",
   unlockLockedOut: (sec: number) =>
     `Trop d'essais. Réessayez dans ${sec} s.`,
+  unlockForgotCode: "Code oublié ? Réinitialiser le verrou",
+  unlockResetPrompt: "Authentifiez-vous pour retirer le verrou de Kairos",
 
   // ── Écran de récupération (état incohérent) ───────────────────────
   recoverTitle: "Données inaccessibles",
@@ -423,6 +425,8 @@ const EN: Strings = {
   unlockWrong: "Wrong code.",
   unlockBiometricPrompt: "Unlock Kairos",
   unlockLockedOut: (sec: number) => `Too many attempts. Try again in ${sec}s.`,
+  unlockForgotCode: "Forgot your code? Reset the lock",
+  unlockResetPrompt: "Authenticate to remove the Kairos lock",
 
   // ── Recovery screen (inconsistent state) ──────────────────────────
   recoverTitle: "Data unavailable",

@@ -11,6 +11,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTheme } from "./ThemeContext";
 import type { Theme } from "./theme";
 import { LangToggle } from "./flags";
@@ -28,6 +29,7 @@ export default function Unlock({
   onBiometric,
   onPasscode,
   lockoutUntil,
+  onResetLock,
 }: {
   lang: Lang;
   setLang: (l: Lang) => void;
@@ -37,9 +39,11 @@ export default function Unlock({
   onBiometric: () => Promise<void>;
   onPasscode: (code: string) => Promise<UnlockResult>;
   lockoutUntil: number | null;
+  onResetLock?: () => void;
 }) {
   const { theme } = useTheme();
-  const s = makeStyles(theme);
+  const insets = useSafeAreaInsets();
+  const s = makeStyles(theme, insets.top);
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -156,14 +160,20 @@ export default function Unlock({
             <Text style={s.secondaryText}>{L.unlockUseBiometric}</Text>
           </Pressable>
         ) : null}
+
+        {onResetLock ? (
+          <Pressable style={s.resetBtn} onPress={onResetLock} hitSlop={10}>
+            <Text style={s.resetText}>{L.unlockForgotCode}</Text>
+          </Pressable>
+        ) : null}
       </View>
     </View>
   );
 }
 
-function makeStyles(t: Theme) {
+function makeStyles(t: Theme, insetTop: number) {
   return StyleSheet.create({
-    screen: { flex: 1, backgroundColor: t.bg, paddingTop: 50 },
+    screen: { flex: 1, backgroundColor: t.bg, paddingTop: Math.max(insetTop, 12) },
     header: {
       paddingHorizontal: 20,
       paddingBottom: 6,
@@ -238,5 +248,7 @@ function makeStyles(t: Theme) {
     primaryText: { fontFamily: t.display.semibold, fontSize: 15, color: t.bg },
     secondaryBtn: { paddingVertical: 12, alignItems: "center" },
     secondaryText: { fontFamily: t.body.semibold, fontSize: 14, color: t.accent },
+    resetBtn: { paddingVertical: 10, alignItems: "center" },
+    resetText: { fontFamily: t.body.medium, fontSize: 12.5, color: t.muted },
   });
 }
