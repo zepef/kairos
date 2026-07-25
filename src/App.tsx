@@ -54,6 +54,7 @@ import { useAppFonts } from "./fonts";
 import { Orb, LogoMark, type OrbVState } from "./Orb";
 import Picker from "./Picker";
 import Settings from "./Settings";
+import AntiSeche from "./AntiSeche";
 import {
   syncNow,
   requestAccess,
@@ -230,6 +231,10 @@ export default function App() {
   const [started, setStarted] = useState(false);
   // Settings overlay (reached from the home ⚙ button).
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Anti-sèche: prepared crib sheets read into an earpiece. Off by default and
+  // hidden in Réglages until the version label is tapped (see Settings.tsx).
+  const [antisecheOn, setAntisecheOn] = useState(false);
+  const [antisecheOpen, setAntisecheOpen] = useState(false);
   // Google Calendar one-way sync (opt-in, OFF by default). Configured in
   // Settings; runs on the "synchronise" intent or the Settings button.
   const [gcalEnabled, setGcalEnabled] = useState(false);
@@ -345,6 +350,12 @@ export default function App() {
     setGcalCalendarId(id);
     setSetting("gcalCalendarId", id).catch(() => {});
   };
+
+  const changeAntiseche = (b: boolean) => {
+    setAntisecheOn(b);
+    setSetting("antisecheOn", b ? "1" : "0").catch(() => {});
+    if (!b) setAntisecheOpen(false);
+  };
   // Map a sync summary to a localized spoken/on-screen sentence.
   const speechForSummary = (sum: SyncSummary): string => {
     if (sum.reason === "no-calendar") return L.gcalNoCalendar;
@@ -412,6 +423,7 @@ export default function App() {
         setLang(savedLang);
         security.setUiLang(savedLang).catch(() => {});
       }
+      setAntisecheOn((await getSetting("antisecheOn")) === "1");
       const gcalOn = (await getSetting("gcalEnabled")) === "1";
       setGcalEnabled(gcalOn);
       setGcalCalendarId(await getSetting("gcalCalendarId"));
@@ -1688,6 +1700,12 @@ export default function App() {
         onRetry={loadGemma}
       />
     );
+  } else if (antisecheOpen) {
+    // Layered ON TOP of Réglages: closing it drops back into the settings screen
+    // it was opened from, instead of all the way home.
+    content = (
+      <AntiSeche L={L} lang={lang} onClose={() => setAntisecheOpen(false)} />
+    );
   } else if (settingsOpen) {
     content = (
       <Settings
@@ -1721,6 +1739,9 @@ export default function App() {
         onEnableZk={onEnableZk}
         onDisableZk={onDisableZk}
         onSetZkBiometric={onSetZkBiometric}
+        antisecheOn={antisecheOn}
+        onToggleAntiseche={changeAntiseche}
+        onOpenAntiseche={() => setAntisecheOpen(true)}
       />
     );
   } else if (calendar) {

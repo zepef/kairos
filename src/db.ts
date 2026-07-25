@@ -130,6 +130,14 @@ export async function initDb(opts?: {
       calendar_id TEXT NOT NULL,
       synced_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS cue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL,
+      position INTEGER NOT NULL,
+      text TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS cue_by_task ON cue (task_id, position);
   `);
   // Migrations for existing installs (ignore "duplicate column" errors).
   for (const col of [
@@ -147,6 +155,13 @@ export async function initDb(opts?: {
       // column already exists — ignore
     }
   }
+  // Drop cue rows whose task is gone. Deleting a task deliberately does NOT
+  // cascade to its cues: that would make "annule" restore an appointment with an
+  // empty crib sheet. Orphans are harmless (every read joins on task) and are
+  // swept here at the next launch, once the undo window is definitively closed.
+  await db.execAsync(
+    "DELETE FROM cue WHERE task_id NOT IN (SELECT id FROM task)",
+  );
 }
 
 function requireDb(): SQLite.SQLiteDatabase {
@@ -374,7 +389,10 @@ export async function updateTaskById(
   const cols = Object.keys(changes).filter((c) => UPDATABLE.has(c));
   if (!cols.length) return;
   const set = cols.map((c) => `${c}=?`).join(", ");
-  const vals = cols.map((c) => changes[c] ?? null);
+  // `changes` is Record<string, unknown> (it comes from the model's JSON), but
+  // every key here passed the UPDATABLE whitelist above, so these are the scalar
+  // column values the driver expects.
+  const vals = cols.map((c) => (changes[c] ?? null) as SQLite.SQLiteBindValue);
   await requireDb().runAsync(
     `UPDATE task SET ${set} WHERE id=?`,
     ...vals,
@@ -482,4 +500,91 @@ export async function upsertGcalMap(
 
 export async function deleteGcalMap(taskId: number): Promise<void> {
   await requireDb().runAsync("DELETE FROM gcal_map WHERE task_id=?", taskId);
+}
+
+// ── Anti-sèche: crib sheets (cues) attached to a task ──
+// A "fiche" is an ordered list of talking points prepared BEFORE a meeting and
+// read back one at a time during it. Nothing here records anyone: the content is
+// written by the user in advance. `position` only defines order — gaps are fine,
+// so deleting a cue never has to renumber its siblings.
+export type Cue = {
+  id: number;
+  task_id: number;
+  position: number;
+  text: string;
+  created_at: number;
+};
+
+export async function listCues(taskId: number): Promise<Cue[]> {
+  return requireDb().getAllAsync<Cue>(
+    "SELECT * FROM cue WHERE task_id=? ORDER BY position ASC, id ASC",
+    taskId,
+  );
+}
+
+export async function addCue(taskId: number, text: string): Promise<Cue> {
+  const now = Date.now();
+  const last = await requireDb().getFirstAsync<{ maxPos: number | null }>(
+    "SELECT MAX(position) AS maxPos FROM cue WHERE task_id=?",
+    taskId,
+  );
+  const position = (last?.maxPos ?? 0) + 1;
+  const res = await requireDb().runAsync(
+    "INSERT INTO cue (task_id, position, text, created_at) VALUES (?, ?, ?, ?)",
+    taskId,
+    position,
+    text,
+    now,
+  );
+  return { id: res.lastInsertRowId, task_id: taskId, position, text, created_at: now };
+}
+
+export async function setCueText(id: number, text: string): Promise<void> {
+  await requireDb().runAsync("UPDATE cue SET text=? WHERE id=?", text, id);
+}
+
+export async function deleteCue(id: number): Promise<void> {
+  await requireDb().runAsync("DELETE FROM cue WHERE id=?", id);
+}
+
+// Swap a cue with its neighbour in the given direction. No-op at either end.
+export async function moveCue(id: number, dir: "up" | "down"): Promise<void> {
+  const dbi = requireDb();
+  const cue = await dbi.getFirstAsync<Cue>("SELECT * FROM cue WHERE id=?", id);
+  if (!cue) return;
+  const neighbour = await dbi.getFirstAsync<Cue>(
+    dir === "up"
+      ? "SELECT * FROM cue WHERE task_id=? AND position < ? ORDER BY position DESC LIMIT 1"
+      : "SELECT * FROM cue WHERE task_id=? AND position > ? ORDER BY position ASC LIMIT 1",
+    cue.task_id,
+    cue.position,
+  );
+  if (!neighbour) return; // already first/last
+  await dbi.withTransactionAsync(async () => {
+    await dbi.runAsync("UPDATE cue SET position=? WHERE id=?", neighbour.position, cue.id);
+    await dbi.runAsync("UPDATE cue SET position=? WHERE id=?", cue.position, neighbour.id);
+  });
+}
+
+// A task that carries a crib sheet, with its cue count — the briefing list shown
+// when starting a session. Ordered like the agenda: soonest appointment first,
+// undated last.
+export type Briefing = Task & { cue_count: number };
+
+export async function listBriefings(): Promise<Briefing[]> {
+  return requireDb().getAllAsync<Briefing>(
+    `SELECT t.*, COUNT(c.id) AS cue_count
+       FROM task t JOIN cue c ON c.task_id = t.id
+      WHERE t.status NOT IN ('done','archived')
+      GROUP BY t.id
+      ORDER BY (t.due_iso IS NULL), t.due_iso ASC, t.created_at DESC`,
+  );
+}
+
+export async function countCues(taskId: number): Promise<number> {
+  const row = await requireDb().getFirstAsync<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM cue WHERE task_id=?",
+    taskId,
+  );
+  return row?.n ?? 0;
 }

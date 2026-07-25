@@ -21,6 +21,9 @@ import type { Lang, Strings } from "./i18n";
 import type { CalInfo } from "./gcal";
 import type { KeyMode } from "./security";
 
+// Taps on the version label needed to reveal the anti-sèche section.
+const REVEAL_TAPS = 7;
+
 export default function Settings({
   lang,
   setLang,
@@ -48,6 +51,9 @@ export default function Settings({
   onEnableZk,
   onDisableZk,
   onSetZkBiometric,
+  antisecheOn,
+  onToggleAntiseche,
+  onOpenAntiseche,
 }: {
   lang: Lang;
   setLang: (l: Lang) => void;
@@ -75,6 +81,9 @@ export default function Settings({
   onEnableZk: (code: string) => Promise<boolean>;
   onDisableZk: () => Promise<void>;
   onSetZkBiometric: (b: boolean) => Promise<void>;
+  antisecheOn: boolean;
+  onToggleAntiseche: (b: boolean) => void;
+  onOpenAntiseche: () => void;
 }) {
   const { theme, name, setTheme } = useTheme();
   const insets = useSafeAreaInsets();
@@ -90,6 +99,11 @@ export default function Settings({
   const [zkOpen, setZkOpen] = useState(false);
   const [zkPc, setZkPc] = useState("");
   const [secMsg, setSecMsg] = useState("");
+  // Anti-sèche is a discreet feature: its section stays out of the way until the
+  // version label is tapped REVEAL_TAPS times. Once enabled it shows permanently,
+  // so nobody has to rediscover the gesture to switch it back off.
+  const [revealTaps, setRevealTaps] = useState(0);
+  const antisecheVisible = antisecheOn || revealTaps >= REVEAL_TAPS;
 
   const closePasscode = () => {
     setPcOpen(false);
@@ -422,6 +436,30 @@ export default function Settings({
           </View>
         )}
 
+        {/* Anti-sèche (révélée par 7 appuis sur le libellé de version) */}
+        {antisecheVisible && (
+          <>
+            <Text style={s.section}>{L.settingsAntiseche}</Text>
+            <View style={s.card}>
+              <View style={s.cardTextCol}>
+                <Text style={s.cardLabel}>{L.settingsAntiseche}</Text>
+                <Text style={s.cardSub}>{L.settingsAntisecheSub}</Text>
+              </View>
+              <Switch
+                value={antisecheOn}
+                onValueChange={onToggleAntiseche}
+                trackColor={{ true: theme.accent, false: theme.line }}
+                thumbColor="#ffffff"
+              />
+            </View>
+            {antisecheOn && (
+              <Pressable style={s.secBtn} onPress={onOpenAntiseche}>
+                <Text style={s.secBtnText}>{L.settingsAntisecheOpen}</Text>
+              </Pressable>
+            )}
+          </>
+        )}
+
         {/* Modèle et confidentialité */}
         <Text style={s.section}>{L.settingsModelPrivacy}</Text>
         <View style={s.cardCol}>
@@ -439,7 +477,9 @@ export default function Settings({
           </Text>
         </View>
 
-        <Text style={s.footer}>{L.versionLabel}</Text>
+        <Pressable onPress={() => setRevealTaps((n) => n + 1)}>
+          <Text style={s.footer}>{L.versionLabel}</Text>
+        </Pressable>
       </ScrollView>
     </View>
   );
