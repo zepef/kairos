@@ -44,6 +44,9 @@ node_modules
 # Claude Code worktrees
 .claude/worktrees/
 
+# graphify knowledge graph (regenerable: `graphify .`)
+graphify-out/
+
 # Build / signing artifacts
 *.apk
 *.aab

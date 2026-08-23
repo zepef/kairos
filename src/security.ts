@@ -21,6 +21,13 @@ const K = {
   // a crash is cleanly either side of it, never a half-flipped state.
   dbState: "kairos.sec.dbState",
   zkBiometric: "kairos.sec.zkBiometric",
+  // salt + hash live TOGETHER in one JSON value, for the same reason dbState does:
+  // they are a single invariant. Stored as two keys they could disagree — a crash
+  // or two overlapping setPasscode() runs interleaving their writes would persist
+  // one run's salt with another's hash, and from then on EVERY code (including the
+  // right one) fails to verify, permanently and undetectably.
+  passcode: "kairos.sec.passcode",
+  // Legacy pre-1.0 two-key form. Read-only: migrated to K.passcode on next set.
   passcodeHash: "kairos.sec.passcodeHash",
   passcodeSalt: "kairos.sec.passcodeSalt",
   dek: "kairos.sec.dek", // recoverable data-encryption key (hex)
@@ -112,11 +119,11 @@ export const setDbState = (s: DbState) => set(K.dbState, JSON.stringify(s));
 
 // ── State snapshot ───────────────────────────────────────────────────────────
 export async function loadSecurity(): Promise<SecurityState> {
-  const [lock, ds, zkBio, pcHash, lockout] = await Promise.all([
+  const [lock, ds, zkBio, pc, lockout] = await Promise.all([
     get(K.lockEnabled),
     getDbState(),
     get(K.zkBiometric),
-    get(K.passcodeHash),
+    readPasscode(),
     get(K.lockoutUntil),
   ]);
   return {
@@ -124,7 +131,7 @@ export async function loadSecurity(): Promise<SecurityState> {
     encEnabled: ds.encEnabled,
     keyMode: ds.keyMode,
     zkBiometric: zkBio !== "0", // default on
-    passcodeSet: !!pcHash,
+    passcodeSet: !!pc,
     activeDbFile: ds.activeDbFile,
     lockoutUntil: lockout ? Number(lockout) : null,
   };
@@ -145,31 +152,61 @@ export const setUiTheme = (v: string) => set(K.uiTheme, v);
 export const setUiLang = (v: string) => set(K.uiLang, v);
 
 // ── Passcode (hash+salt; the plaintext code never persists in recoverable mode) ─
-export async function setPasscode(code: string): Promise<void> {
-  const salt = toHex(await Crypto.getRandomBytesAsync(16));
-  const hash = await Crypto.digestStringAsync(
-    Crypto.CryptoDigestAlgorithm.SHA256,
-    salt + code,
-  );
-  await set(K.passcodeSalt, salt);
-  await set(K.passcodeHash, hash);
-}
-export async function verifyPasscode(code: string): Promise<boolean> {
+// The code is trimmed at every boundary (set / verify / zk key) so a stray
+// trailing space or newline inserted by the keyboard/IME can't cause the very
+// same passcode to fail to match.
+type PasscodeRecord = { salt: string; hash: string };
+
+// The single source of truth for "is there a usable passcode". Returns a record
+// only when salt AND hash are both present, so `passcodeSet` can never be true
+// while verification is impossible (which would otherwise strand the user behind
+// a lock that no code opens).
+async function readPasscode(): Promise<PasscodeRecord | null> {
+  const raw = await get(K.passcode);
+  if (raw) {
+    try {
+      const p = JSON.parse(raw);
+      if (typeof p?.salt === "string" && typeof p?.hash === "string" && p.salt && p.hash)
+        return { salt: p.salt, hash: p.hash };
+    } catch {
+      /* corrupt value → fall through to "not set" */
+    }
+    return null;
+  }
+  // Legacy two-key form: usable only if both halves survived.
   const [salt, hash] = await Promise.all([
     get(K.passcodeSalt),
     get(K.passcodeHash),
   ]);
-  if (!salt || !hash) return false;
+  return salt && hash ? { salt, hash } : null;
+}
+
+export async function setPasscode(code: string): Promise<void> {
+  const c = code.trim();
+  const salt = toHex(await Crypto.getRandomBytesAsync(16));
+  const hash = await Crypto.digestStringAsync(
+    Crypto.CryptoDigestAlgorithm.SHA256,
+    salt + c,
+  );
+  // ONE write: whatever crashes or interleaves, salt and hash can never disagree.
+  await set(K.passcode, JSON.stringify({ salt, hash }));
+  await del(K.passcodeSalt); // retire the legacy pair
+  await del(K.passcodeHash);
+}
+export async function verifyPasscode(code: string): Promise<boolean> {
+  const rec = await readPasscode();
+  if (!rec) return false;
   const test = await Crypto.digestStringAsync(
     Crypto.CryptoDigestAlgorithm.SHA256,
-    salt + code,
+    rec.salt + code.trim(),
   );
-  return test === hash;
+  return test === rec.hash;
 }
 export async function isPasscodeSet(): Promise<boolean> {
-  return !!(await get(K.passcodeHash));
+  return !!(await readPasscode());
 }
 export async function clearPasscode(): Promise<void> {
+  await del(K.passcode);
   await del(K.passcodeHash);
   await del(K.passcodeSalt);
 }
@@ -194,7 +231,7 @@ export const recoverableKeyMaterial = (hex: string): KeyMaterial => ({
 });
 export const passcodeKeyMaterial = (code: string): KeyMaterial => ({
   form: "passphrase",
-  secret: code,
+  secret: code.trim(),
 });
 
 // ── Zero-knowledge biometric convenience cache ───────────────────────────────

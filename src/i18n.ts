@@ -71,7 +71,7 @@ const FR = {
   noTasksCriteria: "Aucune tâche pour ces critères.",
   miscFolder: "Divers",
   testChip: "Tester",
-  versionLabel: "Kairos version 0.8",
+  versionLabel: "Kairos version 1.0",
   // display title qualifiers
   qualUrgent: "urgent",
   qualFor: (c: string) => `pour ${c}`,
@@ -91,8 +91,8 @@ const FR = {
   pickerWarmup: "Préchauffage du modèle…",
   pickerOnceOffline: "Une seule fois. Ensuite, 100 % hors-ligne.",
   pickerStart: "Commencer",
-  orbHoldIdle: "Maintenez pour parler",
-  orbHoldListening: "Relâchez pour envoyer",
+  orbTapIdle: "Touchez pour parler",
+  orbTapListening: "Touchez pour arrêter",
   orbUnderstanding: "Compréhension…",
   orbSub: "Compris et répondu sur votre téléphone",
   orbSubListening: "Rien ne quitte l'appareil",
@@ -180,6 +180,8 @@ const FR = {
   unlockBiometricPrompt: "Déverrouiller Kairos",
   unlockLockedOut: (sec: number) =>
     `Trop d'essais. Réessayez dans ${sec} s.`,
+  unlockForgotCode: "Code oublié ? Réinitialiser le verrou",
+  unlockResetPrompt: "Authentifiez-vous pour retirer le verrou de Kairos",
 
   // ── Écran de récupération (état incohérent) ───────────────────────
   recoverTitle: "Données inaccessibles",
@@ -201,7 +203,7 @@ const FR = {
   // ── Spoken feedback shared by App + intent ────────────────────────
   loadingModel: "Patienter pendant le chargement du modèle.",
   initSystem: "Initialisation du système.",
-  holdButton: "Maintenez le bouton central appuyé pour enregistrer votre commande.",
+  tapButton: "Touchez le bouton central pour lancer l'enregistrement, touchez-le à nouveau pour l'arrêter.",
   micDenied: "permission micro refusée",
   notUnderstood: "Je n'ai pas compris.",
   notUnderstoodRequest: "Je n'ai pas compris la demande.",
@@ -316,7 +318,7 @@ const EN: Strings = {
   noTasksCriteria: "No tasks for these filters.",
   miscFolder: "Misc",
   testChip: "Test",
-  versionLabel: "Kairos version 0.8",
+  versionLabel: "Kairos version 1.0",
   qualUrgent: "urgent",
   qualFor: (c: string) => `for ${c}`,
   qualWith: (p: string) => `with ${p}`,
@@ -335,8 +337,8 @@ const EN: Strings = {
   pickerWarmup: "Warming up the model…",
   pickerOnceOffline: "Just once. Then 100% offline.",
   pickerStart: "Get started",
-  orbHoldIdle: "Hold to speak",
-  orbHoldListening: "Release to send",
+  orbTapIdle: "Tap to speak",
+  orbTapListening: "Tap to stop",
   orbUnderstanding: "Understanding…",
   orbSub: "Understood & answered on your phone",
   orbSubListening: "Nothing leaves the device",
@@ -423,6 +425,8 @@ const EN: Strings = {
   unlockWrong: "Wrong code.",
   unlockBiometricPrompt: "Unlock Kairos",
   unlockLockedOut: (sec: number) => `Too many attempts. Try again in ${sec}s.`,
+  unlockForgotCode: "Forgot your code? Reset the lock",
+  unlockResetPrompt: "Authenticate to remove the Kairos lock",
 
   // ── Recovery screen (inconsistent state) ──────────────────────────
   recoverTitle: "Data unavailable",
@@ -442,7 +446,7 @@ const EN: Strings = {
 
   loadingModel: "Please wait while the model loads.",
   initSystem: "Initializing the system.",
-  holdButton: "Hold the center button to record your command.",
+  tapButton: "Tap the center button to start recording, tap it again to stop.",
   micDenied: "microphone permission denied",
   notUnderstood: "I didn't understand.",
   notUnderstoodRequest: "I didn't understand the request.",

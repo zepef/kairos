@@ -11,6 +11,7 @@ import {
   View,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Speech from "expo-speech";
 import {
   ExpoSpeechRecognitionModule,
@@ -40,6 +41,7 @@ import {
   listTasks,
   setSetting,
   updateTaskById,
+  verifyKey,
   type KeyMaterial,
   type Revert,
   type Task,
@@ -208,7 +210,12 @@ function buildFolders(items: Task[], miscLabel: string): Folder[] {
 }
 
 export default function App() {
+  // Real system-bar insets (Android 15 edge-to-edge). Used to pad headers/docks
+  // instead of a hardcoded status-bar height, so the top of the screen renders
+  // below the status bar AND stays interactive.
+  const insets = useSafeAreaInsets();
   const [status, setStatus] = useState<Status>("idle");
+  const [micOn, setMicOn] = useState(false); // intended mic state (tap-to-toggle)
   const [log, setLog] = useState<string[]>([]);
   const [testIdx, setTestIdx] = useState(0);
   // Active UI/voice language (FR launch default), toggled by the flags. Drives
@@ -313,7 +320,10 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [themeName],
   );
-  const styles = useMemo(() => makeStyles(theme), [theme]);
+  const styles = useMemo(
+    () => makeStyles(theme, insets.top, insets.bottom),
+    [theme, insets.top, insets.bottom],
+  );
 
   // Language change that also persists the choice.
   const changeLang = (l: Lang) => {
@@ -482,6 +492,7 @@ export default function App() {
 
   useSpeechRecognitionEvent("start", () => {
     setStatus("listening");
+    setMicOn(true);
     // A new utterance begins: clear the previous summary right away so the top
     // panel is replaced by the new intent (shows "À l'écoute…" meanwhile).
     setHeard("");
@@ -501,10 +512,16 @@ export default function App() {
   useSpeechRecognitionEvent("error", (event) => {
     addLog(`✗ error: ${event.error} — ${event.message}`);
     setStatus("idle");
+    setMicOn(false);
   });
 
+  // The recognizer also ends by itself (silence timeout, continuous:false). Clear
+  // the intended state too, or the orb would keep offering "tap to stop" on a mic
+  // that is already closed — and the next tap would stop nothing instead of
+  // starting a new utterance.
   useSpeechRecognitionEvent("end", () => {
     setStatus((s) => (s === "speaking" ? s : "idle"));
+    setMicOn(false);
   });
 
   const speak = (text: string) => {
@@ -635,9 +652,18 @@ export default function App() {
     if (!st) return "bad";
     if (lockoutUntil && lockoutUntil > Date.now()) return "lockedout";
     const zk = st.encEnabled && st.keyMode === "zk";
-    if (!zk && st.passcodeSet && !(await security.verifyPasscode(code))) {
-      registerFail();
-      return "bad";
+    // Non-zk: the hash is the gate. A lock with no verifiable passcode is an
+    // inconsistent state — NOT a free pass. (Letting it through would unlock the
+    // app for ANY input.)
+    if (!zk) {
+      if (!st.passcodeSet) {
+        setRecover(true);
+        return "bad";
+      }
+      if (!(await security.verifyPasscode(code))) {
+        registerFail();
+        return "bad";
+      }
     }
     let key: KeyMaterial = null;
     if (zk) key = security.passcodeKeyMaterial(code);
@@ -649,15 +675,57 @@ export default function App() {
       }
       key = security.recoverableKeyMaterial(hex);
     }
+    // zk: the code IS the key, so SQLCipher opening the file is the real check.
+    // But bootDb → initDb early-returns when the handle is already open (it stays
+    // open across a background re-lock), which would make that check a no-op and
+    // let ANY code back in. Prove the key against the file on its own connection.
+    if (zk && !(await verifyKey(st.activeDbFile, key))) {
+      registerFail();
+      return "bad";
+    }
     try {
       await bootDb(key, st.activeDbFile);
     } catch {
-      registerFail(); // zk: wrong code → SQLCipher NOTADB
+      registerFail();
       return "bad";
     }
     resetFails();
     if (zk && st.zkBiometric) security.cacheZkPasscode(code).catch(() => {});
     return "ok";
+  };
+
+  // Escape hatch: a locked-out user must never be trapped out of UNENCRYPTED data.
+  // In zk mode the passcode IS the key, so a reset would lose data → route to the
+  // recovery screen instead. In plaintext / recoverable mode the key is independent
+  // of the passcode, so we can safely drop the lock and open the DB — zero data loss.
+  //
+  // GATED ON DEVICE AUTHENTICATION. Without this the button IS the bypass: anyone
+  // holding the phone taps once from the lock screen and is inside. Proving you can
+  // unlock the DEVICE (biometric, or its PIN/pattern via the fallback) is what earns
+  // the right to drop Kairos's own lock.
+  const handleResetLock = async () => {
+    const st = sec;
+    if (st?.encEnabled && st.keyMode === "zk") {
+      setRecover(true);
+      return;
+    }
+    if (!(await security.authenticate(L.unlockResetPrompt))) return;
+    await security.clearPasscode();
+    await security.setLockEnabled(false);
+    resetFails();
+    const fresh = await security.loadSecurity();
+    setSec(fresh);
+    let key: KeyMaterial = null;
+    if (fresh.encEnabled) {
+      const hex = await security.getRecoverableKey();
+      key = hex ? security.recoverableKeyMaterial(hex) : null;
+    }
+    try {
+      await bootDb(key, fresh.activeDbFile);
+    } catch {
+      setUnlocked(true);
+      loadGemma();
+    }
   };
 
   // ── Encryption migrations (blocking, crash-safe) ──
@@ -1180,11 +1248,13 @@ export default function App() {
     }
   };
 
-  const startListening = async () => {
+  // Returns whether the recognizer was actually started, so the caller can undo
+  // its optimistic "mic is on" state when the permission is refused.
+  const startListening = async (): Promise<boolean> => {
     const perm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
     if (!perm.granted) {
       addLog(`✗ ${L.micDenied}`);
-      return;
+      return false;
     }
     ExpoSpeechRecognitionModule.start({
       lang: STT_LANG[lang],
@@ -1196,9 +1266,27 @@ export default function App() {
         EXTRA_PREFER_OFFLINE: true, // Kairos is offline-first
       },
     });
+    return true;
   };
 
   const stopListening = () => ExpoSpeechRecognitionModule.stop();
+
+  // Tap to start, tap again to stop — hold-to-talk is unusable one-handed in a
+  // bus or a train. `micOn` is the INTENDED state and flips optimistically on the
+  // tap: `status` only turns "listening" once the recognizer's async "start" event
+  // lands, so keying off it would let a quick second tap fire a second start().
+  // The recognizer also stops on its own (silence, error) — the SR events below
+  // put `micOn` back to false, so the UI can't claim it is still listening.
+  const toggleListening = async () => {
+    if (processing) return;
+    if (micOn) {
+      setMicOn(false);
+      stopListening();
+      return;
+    }
+    setMicOn(true);
+    if (!(await startListening())) setMicOn(false);
+  };
 
   // Temporal window (level 2) for the display command.
   const scopeBounds = (s: Scope): [number, number] => {
@@ -1433,10 +1521,10 @@ export default function App() {
     status === "listening" ? "listening" : processing ? "understanding" : "idle";
   const orbLabel =
     status === "listening"
-      ? L.orbHoldListening
+      ? L.orbTapListening
       : processing
         ? L.orbUnderstanding
-        : L.orbHoldIdle;
+        : L.orbTapIdle;
   const orbSub = status === "listening" ? L.orbSubListening : L.orbSub;
 
   // The detected-intent line shown in the calendar header, right of the date:
@@ -1450,13 +1538,12 @@ export default function App() {
         : summary;
   const calIntentEmoji = status === "listening" || processing ? "" : summaryEmoji;
 
-  // The orb doubles as the push-to-talk button once ready: hold to listen. It is
+  // The orb doubles as the mic button once ready: tap to start, tap to stop. It is
   // disabled while an utterance is still being understood/displayed (processing)
   // so a new command can't start before the current one is fully resolved.
   const renderTalk = (size: number) => (
     <Pressable
-      onPressIn={startListening}
-      onPressOut={stopListening}
+      onPress={toggleListening}
       disabled={processing}
       hitSlop={12}
       style={({ pressed }) => ({
@@ -1484,7 +1571,7 @@ export default function App() {
   // cue now that the orb is actually on screen.
   const handleStart = () => {
     setStarted(true);
-    speak(L.holdButton);
+    speak(L.tapButton);
   };
 
   const runTest = () => {
@@ -1584,6 +1671,7 @@ export default function App() {
         onBiometric={attemptBiometricUnlock}
         onPasscode={attemptPasscodeUnlock}
         lockoutUntil={lockoutUntil}
+        onResetLock={handleResetLock}
       />
     );
   } else if (!started) {
@@ -1808,13 +1896,17 @@ export default function App() {
   );
 }
 
-function makeStyles(t: Theme) {
+function makeStyles(t: Theme, insetTop: number, insetBottom: number) {
+  // Under Android 15 edge-to-edge the app draws behind the system bars, so the
+  // real inset (not a hardcoded 50) must pad the top; a small floor keeps a sane
+  // gap on devices that report a tiny/zero top inset.
+  const headerTop = Math.max(insetTop, 12);
   return StyleSheet.create({
     screen: { flex: 1, backgroundColor: t.bg },
 
     // ── Home header ──
     header: {
-      paddingTop: 50,
+      paddingTop: headerTop,
       paddingHorizontal: 16,
       paddingBottom: 4,
       flexDirection: "row",
@@ -1838,7 +1930,7 @@ function makeStyles(t: Theme) {
 
     // ── List / candidates header ──
     pageHeader: {
-      paddingTop: 50,
+      paddingTop: headerTop,
       paddingHorizontal: 20,
       paddingBottom: 4,
       flexDirection: "row",
@@ -1984,7 +2076,11 @@ function makeStyles(t: Theme) {
     },
     taskDue: { fontFamily: t.body.semibold, fontSize: 12.5, marginTop: 1 },
 
-    dockTalk: { alignItems: "center", paddingVertical: 8, paddingBottom: 47 },
+    dockTalk: {
+      alignItems: "center",
+      paddingTop: 8,
+      paddingBottom: Math.max(insetBottom + 8, 20),
+    },
   });
 }
 
@@ -2109,6 +2205,11 @@ function RecoveryScreen({
             placeholder={L.unlockCodePlaceholder}
             placeholderTextColor={theme.muted}
             secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            autoComplete="off"
+            spellCheck={false}
+            importantForAutofill="no"
             editable={!busy}
             onSubmitEditing={submit}
             style={{

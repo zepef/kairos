@@ -16,6 +16,7 @@ import {
   View,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTheme } from "./ThemeContext";
 import { THEMES, THEME_ORDER, type Theme } from "./theme";
 import { LangToggle } from "./flags";
@@ -42,7 +43,8 @@ export default function Picker({
   onRetry?: () => void;
 }) {
   const { theme, name, setTheme } = useTheme();
-  const s = makeStyles(theme);
+  const insets = useSafeAreaInsets();
+  const s = makeStyles(theme, insets.top, insets.bottom);
   return (
     <View style={s.screen}>
       <View style={s.header}>
@@ -169,9 +171,9 @@ function IndeterminateBar({ theme }: { theme: Theme }) {
   );
 }
 
-function makeStyles(t: Theme) {
+function makeStyles(t: Theme, insetTop: number, insetBottom: number) {
   return StyleSheet.create({
-    screen: { flex: 1, backgroundColor: t.bg, paddingTop: 50 },
+    screen: { flex: 1, backgroundColor: t.bg, paddingTop: Math.max(insetTop, 12) },
     header: {
       paddingHorizontal: 20,
       paddingBottom: 6,
@@ -213,7 +215,11 @@ function makeStyles(t: Theme) {
       justifyContent: "center",
     },
     checkMark: { color: t.bg, fontSize: 13, fontFamily: t.body.bold },
-    footer: { paddingHorizontal: 20, paddingBottom: 47, paddingTop: 8 },
+    footer: {
+      paddingHorizontal: 20,
+      paddingBottom: Math.max(insetBottom + 8, 20),
+      paddingTop: 8,
+    },
     progRow: {
       flexDirection: "row",
       alignItems: "center",
